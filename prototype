@@ -1,0 +1,11 @@
+i pkginfo=./pkginfo
+i depend
+d none var 0755 root sys
+d none var/svc 0755 root sys
+d none var/svc/manifest 0755 root sys
+d none var/svc/manifest/site 0755 root sys
+f none var/svc/manifest/site/vbox-svc.xml 0644 root sys
+d none lib 0755 root sys
+d none lib/svc 0755 root sys
+d none lib/svc/method 0755 root sys
+f none lib/svc/method/vbox.sh 0755 root sys

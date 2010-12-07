@@ -1,0 +1,305 @@
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+<!--
+   http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
+
+   $Id: vbox-svc.xml,v 1.15 2010/08/20 08:27:01 jim Exp $
+   This manifest is distributed under the following MIT License terms:
+
+   Copyright (c) 2009 Alexandre Dumont
+   Copyright (c) 2010 Jim Klimov, JSC COS&HT
+
+   Permission is hereby granted, free of charge, to any person
+   obtaining a copy of this software and associated documentation
+   files (the "Software"), to deal in the Software without
+   restriction, including without limitation the rights to use,
+   copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the
+   Software is furnished to do so, subject to the following
+   conditions:
+
+   The above copyright notice and this permission notice shall be
+   included in all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+   OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+   OTHER DEALINGS IN THE SOFTWARE.
+-->
+
+
+<service_bundle type='manifest' name='vbox'>
+
+<service
+   name='site/xvm/vbox'
+   type='service'
+   version='0.11'>
+
+   <dependency
+      name='multi-user-server'
+      type='service'
+      grouping='require_all'
+      restart_on='none'>
+      <service_fmri value='svc:/milestone/multi-user-server' />
+   </dependency>
+
+   <!--   Wait for network interfaces to be initialized. -->
+   <dependency
+      name='network'
+      grouping='require_all'
+      restart_on='none'
+      type='service'>
+      
+      <service_fmri value='svc:/milestone/network:default' />
+      
+   </dependency>
+
+   <!--    Wait for all local filesystems to be mounted.    -->
+   <dependency
+      name='filesystem-local'
+      grouping='require_all'
+      restart_on='none'
+      type='service'>
+         <service_fmri value='svc:/system/filesystem/local:default' />
+   </dependency>
+
+   <!--    Wait for all remote filesystems to be mountable, if enabled.  -->
+   <dependency
+      name='nfs-client'
+      grouping='optional_all'
+      restart_on='none'
+      type='service'>
+         <service_fmri value='svc:/network/nfs/server:default' />
+	 <service_fmri value='svc:/system/filesystem/autofs:default' />
+   </dependency>
+
+   <exec_method
+      type='method'
+      name='start'
+      exec='/lib/svc/method/vbox.sh start'
+      timeout_seconds='60'
+   />
+
+   <exec_method
+      type='method'
+      name='stop'
+      exec='/lib/svc/method/vbox.sh stop'
+      timeout_seconds='120'
+   />
+
+   <property_group name='startd' type='framework'>
+      <propval name='duration' type='astring' value='transient' />
+   </property_group>
+
+   <property_group  name='vm' type='application'>
+      <!-- SMF service default properties -->
+
+      <!-- stop_method is used to set how SMF will stop the VM:
+      Possible values are: acpipowerbutton, savestate, acpisleepbutton, poweroff -->
+      <propval name='stop_method' type='astring' value='savestate' />
+
+      <!-- A stop_timeout > 0 value causes 'stop_vm()' to abort waiting for
+        VM exit after a while and return an error state. 
+        In case of service stop by SMF this may not matter due to 
+        SMF's own timeouts.
+        In case of VM reboot/reset this can interfere with i.e. 
+        Windows Auto Update upon Shutdown.
+        Counts in cycles which "sleep 1" and check VM state. -->
+      <propval name='stop_timeout' type='integer' value='3600' />
+
+      <!-- start_aborted_vm controls whether SMF should autostart
+      "aborted" VMs (i.e. unexpected host poweroff) -->
+      <propval name='start_aborted_vm' type='boolean' value='true' />
+
+      <!-- What do we do with a VM in paused state when its SMF service starts? -->
+      <propval name='start_paused_vm' type='boolean' value='true' />
+
+      <!-- use NICE!=0 for launching VBoxHeadless with tweaked priority
+      if NICE=0 then launch using VBoxManage (doesn't inherit NICE) -->
+      <propval name='nice' type='integer' value='0' />
+
+      <!-- if 'true' then script does 'set -x' to output runlines -->
+      <propval name='debug_smf' type='boolean' value='false' />
+
+      <!-- Below are several options for the monitoring "kicker"
+	    It is an endless loop to check VirtualBox VM state
+	    and react somehow if the machine became not "running"
+	    Kicker options are re-read on each loop cycle
+	    Don't forget "svcadm refresh" though! ;) -->
+
+      <!-- with kicker_debug=true logs some info about each cycle
+    	Activity about VM state-change is logged anyway -->
+      <propval name='kicker_debug' type='boolean' value='false' />
+
+      <!-- Delay at start of each cycle to prevent self-DoSing. 
+    	The calling script also sleeps (10 sec) between cycles
+    	NOTE this directly delays "svcadm disable/restart", and
+    	the service hangs as 'online*' until a loop cycle ends.
+    	We have a PID file and a killer to try and remedy that. -->
+      <propval name='kicker_freq' type='integer' value='50' />
+
+      <!-- kicker_restart="none" or "all" overrides restart_*_vm below
+    	and thinks they are all false or true, respectively -->
+      <propval name='kicker_restart' type='astring' value='' />
+
+      <!-- restart a monitored VM which got into state X while working? -->
+      <propval name='restart_aborted_vm' type='boolean' value='true' />
+      <propval name='restart_halted_vm' type='boolean' value='false' />
+      <propval name='restart_saved_vm' type='boolean' value='false' />
+
+      <!-- if 'restart_X_vm' != 'true' and the VM got into this state 'X'
+        (paused, saved, poweroff), or if VM got into an unknown state,
+	should we always cause SMF 'maintenance' state instead of 
+	default temporary 'offline'? -->
+      <propval name='offline_is_maint' type='boolean' value='false' />
+
+      <!-- With the introduction of ability to intercept and return the GUI
+        mode, user may want to enforce VM startup after saving its state in
+        GUI (i.e. he used method 'startgui' to save VM, start GUI, then
+        saved VM from GUI and exited GUI - VM should restart in SMF service).
+        If this value is set to 'false' the feature is disabled.
+        If it is a path or empty/'true' (autocalc path) - the file will be
+        created and used to enable such auto restart regardless of both 
+        'restart_saved_vm' or 'kicker_restart' values -->
+      <propval name='kicker_restart_saved_vm_once_file_name' type='astring' value='true' />
+
+      <!-- A special lock-file to suppress KICKER activity during startgui -->
+      <propval name='kicker_nokick_file_name' type='astring' value='' />
+
+      <!-- Paused VMs are kind of a special case - a VM which is saving
+        to disk may be "paused" during that time.
+        By default we choose to ignore runtime changes to the "paused" 
+        state and let the user or VirtualBox decide VM's future.
+        This is separate from "start_paused_vm" during service startup -->
+      <propval name='restart_paused_vm' type='boolean' value='false' />
+      <propval name='ignore_paused_vm' type='boolean' value='true' />
+
+      <!-- The script can try to keep track of repeating abortions
+    	(i.e. host strained on resources) before "maintenance"ing the SMF
+    	service. Tolerate "restart_aborted_vm_failures_maxcount" abortions
+    	over the last "restart_aborted_vm_failures_timeframe" seconds.
+	Set both properties to positive integers to enable the feature.
+	Requires gdate in PATH -->
+      <propval name='restart_aborted_vm_failures_maxcount' type='integer' value='3' />
+      <propval name='restart_aborted_vm_failures_timeframe' type='integer' value='1200' />
+
+      <!-- If the VM gets into an unknown state (according to VirtualBox CLI)
+	it is to be offlined (or put into maintenance, see 'offline_is_maint'
+	after this many consecutive hits. Use negative value to disable. -->
+      <propval name='offline_unknown_state_maxcount' type='integer' value='3' />
+
+      <!-- PID file for the KICKER looping process. Used during service stop
+        to quickly kill the loop, otherwise the service will be offlined
+        when a loop cycle ends (see 'vm/kicker_freq' for approx value) -->
+      <propval name='kicker_pidfile_name' type='astring' value='' />
+
+      <!-- When a service intends to set itself into maintenance mode
+        by KICKER decision, but can't (i.e. non-root user without proper
+        RBAC setup) it would leave a block file to cause quick failures
+        of subsequent restarts and ultimately the maintenance mode set 
+        by SMF itself. File should be no older than 'kicker_blockfile_maxage'
+	(re-touched on each push to maintenance mode).
+	Requires gdate in PATH.
+        NOTE: possible security issue, as the specified block file will
+        be removed (and an enabled SMF operator can try to do that, 
+        although only with his user privileges.
+        NOTE: possible DoS vector, so can be disabled globally or per-VM
+        (i.e. after RBAC is in place) -->
+      <propval name='kicker_blockfile_enabled' type='boolean' value='true' />
+      <propval name='kicker_blockfile_name' type='astring' value='' />
+      <propval name='kicker_blockfile_maxage' type='integer' value='60' />
+
+      <!-- Hook for an arbitrary method+params of checking that the VM provides
+        its services (web, dbms, ping, etc). As far as vbox-svc is concerned,
+        this method should return an error code of 
+    	    0 for okay (clear counter),
+    	    1 for failure detected, increase counter
+    	    2 for instant reboot VM (acpipoweroff-poweroff-poweron),
+    	    3 for instant cause SMF maintenance
+	It is encouraged that the method uses some limitation of its execution
+	time, as each loop cycle will have to wait for the check to complete.
+	Note for COS&HT users: see /opt/COSas/bin/timerun.sh
+      -->
+      <propval name='kicker_vmsvccheck_enabled' type='boolean' value='false' />
+      <propval name='kicker_vmsvccheck_method' type='astring' value='' />
+      <propval name='kicker_vmsvccheck_method_params' type='astring' value='' />
+      <propval name='kicker_vmsvccheck_startdelay' type='integer' value='300' />
+      <propval name='kicker_vmsvccheck_failures_maxcount' type='integer' value='3' />
+      <propval name='kicker_vmsvccheck_failures_timeframe' type='integer' value='1200' />
+
+   </property_group>
+
+   <instance name='VM_NAME' enabled='false'>
+   
+      <method_context working_directory='/var/tmp'>
+         <method_credential user='root' group='root' />
+      </method_context>
+   
+      <property_group  name='vm' type='application'>
+        <!-- See comments and current defaults in service def, above -->
+         <propval name='stop_method' type='astring' value='savestate' />
+         <propval name='start_aborted_vm' type='boolean' value='true' />
+         <propval name='start_paused_vm' type='boolean' value='true' />
+         <propval name='offline_is_maint' type='boolean' value='false' />
+         <propval name='kicker_blockfile_enabled' type='boolean' value='true' />
+
+<!-- // Likely you want to override values below for a certain VM -->
+<!-- 
+         <propval name='stop_timeout' type='integer' value='3600' />
+         <propval name='nice' type='integer' value='0' />
+         <propval name='debug_smf' type='boolean' value='false' />
+
+         <propval name='kicker_debug' type='boolean' value='false' />
+         <propval name='kicker_freq' type='integer' value='60' />
+
+         <propval name='kicker_restart' type='astring' value='' />
+         <propval name='restart_aborted_vm' type='boolean' value='true' />
+         <propval name='restart_paused_vm' type='boolean' value='false' />
+         <propval name='restart_halted_vm' type='boolean' value='false' />
+         <propval name='restart_saved_vm' type='boolean' value='false' />
+         <propval name='ignore_paused_vm' type='boolean' value='true' />
+
+         <propval name='restart_aborted_vm_failures_maxcount' type='integer' value='3' />
+         <propval name='restart_aborted_vm_failures_timeframe' type='integer' value='1200' />
+
+         <propval name='kicker_vmsvccheck_enabled' type='boolean' value='false' />
+         <propval name='kicker_vmsvccheck_method' type='astring' value='' />
+         <propval name='kicker_vmsvccheck_method_params' type='astring' value='' />
+         <propval name='kicker_vmsvccheck_startdelay' type='integer' value='300' />
+         <propval name='kicker_vmsvccheck_failures_maxcount' type='integer' value='3' />
+         <propval name='kicker_vmsvccheck_failures_timeframe' type='integer' value='1200' />
+-->
+
+<!-- // These have sane autovalues in the script, but to somewhat hide from
+	a DoS via external files, you might want to override such values -->
+<!-- 
+         <propval name='kicker_blockfile_name' type='astring' value='' />
+         <propval name='kicker_blockfile_maxage' type='integer' value='60' />
+
+         <propval name='kicker_pidfile_name' type='astring' value='' />
+
+         <propval name='kicker_restart_saved_vm_once_file_name' type='astring' value='' />
+         <propval name='kicker_nokick_file_name' type='astring' value='' />
+-->
+      </property_group>
+   
+   </instance>
+
+   <stability value='Unstable' />
+
+   <template>
+      <common_name>
+         <loctext xml:lang='C'>Sun xVM Virtualbox</loctext>
+      </common_name>
+      <documentation>
+         <manpage title='Sun xVM Virtualbox' section='1' />
+      </documentation>
+   </template>
+
+</service>
+
+</service_bundle>
