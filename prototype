@@ -9,3 +9,9 @@ d none lib 0755 root sys
 d none lib/svc 0755 root sys
 d none lib/svc/method 0755 root sys
 f none lib/svc/method/vbox.sh 0755 root sys
+d none usr 0755 root sys
+d none usr/share 0755 root sys
+d none usr/share/doc 0755 root bin
+d none usr/share/doc/vboxsvc 0755 root sys
+f none usr/share/doc/vboxsvc/README-vboxsvc.txt 0644 root sys
+f none usr/share/doc/vboxsvc/TODO-vboxsvc.txt 0644 root sys

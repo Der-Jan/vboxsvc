@@ -1,0 +1,9 @@
+Actually test VMSVCCHECK (checking of some services inside a VM from
+host via custom hook scripts).
+
+Add setting of host timezone not equal to user/OS default timezone,
+i.e. run VMs as UTC whatever the user's own preference is.
+
+Allow to set CPU Affinity in some manner...
+
+Change PKG paths to /opt/VirtualBox/vboxsvc (for sparse-root zones)?
