@@ -3,11 +3,11 @@
 <!--
    http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
 
-   $Id: vbox-svc.xml,v 1.15 2010/08/20 08:27:01 jim Exp $
+   $Id: vbox-svc.xml,v 1.19 2011/07/13 17:47:04 jim Exp $
    This manifest is distributed under the following MIT License terms:
 
    Copyright (c) 2009 Alexandre Dumont
-   Copyright (c) 2010 Jim Klimov, JSC COS&HT
+   Copyright (c) 2010-2011 Jim Klimov, JSC COS&HT
 
    Permission is hereby granted, free of charge, to any person
    obtaining a copy of this software and associated documentation
@@ -37,7 +37,7 @@
 <service
    name='site/xvm/vbox'
    type='service'
-   version='0.11'>
+   version='0.13'>
 
    <dependency
       name='multi-user-server'
@@ -217,12 +217,14 @@
         its services (web, dbms, ping, etc). As far as vbox-svc is concerned,
         this method should return an error code of 
     	    0 for okay (clear counter),
-    	    1 for failure detected, increase counter
-    	    2 for instant reboot VM (acpipoweroff-poweroff-poweron),
+    	    1 for failure detected, increase counter; reboot VM on overflow
+    	    2 for instant reboot VM (acpipoweroff-poweroff-reset-poweron),
+	      if the method decides that the VM error is fatal enough,
     	    3 for instant cause SMF maintenance
 	It is encouraged that the method uses some limitation of its execution
 	time, as each loop cycle will have to wait for the check to complete.
 	Note for COS&HT users: see /opt/COSas/bin/timerun.sh
+	Note: for reboots to work it is critical to set a vm/stop_timeout
       -->
       <propval name='kicker_vmsvccheck_enabled' type='boolean' value='false' />
       <propval name='kicker_vmsvccheck_method' type='astring' value='' />
@@ -230,6 +232,10 @@
       <propval name='kicker_vmsvccheck_startdelay' type='integer' value='300' />
       <propval name='kicker_vmsvccheck_failures_maxcount' type='integer' value='3' />
       <propval name='kicker_vmsvccheck_failures_timeframe' type='integer' value='1200' />
+
+      <!-- Set a specific different "VM hardware clock" time zone
+        for the VM process, i.e. 'UTC' or 'Europe/Moscow' -->
+      <propval name='timezone' type='astring' value='' />
 
    </property_group>
 
@@ -285,8 +291,10 @@
          <propval name='kicker_restart_saved_vm_once_file_name' type='astring' value='' />
          <propval name='kicker_nokick_file_name' type='astring' value='' />
 -->
+
+	 <propval name='timezone' type='astring' value='UTC' />
       </property_group>
-   
+
    </instance>
 
    <stability value='Unstable' />

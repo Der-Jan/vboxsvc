@@ -6,7 +6,7 @@ HISTORY AND AUTHORS
   See his original posts:
   * http://adumont.serveblog.net/2009/07/21/virtualbox-smf/
   * http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
-* (C) 2010 by Jim Klimov, JSC COS&HT
+* (C) 2010-2011 by Jim Klimov, JSC COS&HT
   One of the "heavily upgraded" versions of these scripts was written
   by Jim Klimov, JSC COS&HT (Center of Open Systems and High Technologies)
   It was initially published on VirtualBox forum as a topic
@@ -29,7 +29,7 @@ Many different follow-up scripts were developed and published on the
 basis of Alexandre's code and explanations, and this one among them.
 
 Over the past months I've used and extended this service, and published
-"release-0.09" on VirtualBox forum with features including:
+"release-0.09" (2010-07-28) on VirtualBox forum with features including:
 * to enable management of paused VMs,
 * savestate and restore the VMs (i.e. on service disable/enable),
 * run certain VMs with a tweaked NICE priority,
@@ -45,10 +45,11 @@ Over the past months I've used and extended this service, and published
   ability to save VM state, restart it with a GUI mode for manual
   maintenance, and when you're done - save state again and the VM
   will be managed by its SMF service again,
-* UNTESTED hooks to call external scripts which can poll the VM's
+* Moderately-tested hooks to call external scripts which can poll the VM's
   services to see if it is alive inside.
 
-Updates in release 0.11 as a difference from previously published 0.09:
+Updates in release 0.11 (2010-08-24) as a difference from previously published
+version 0.09:
 * Add processing for VBox empty state as a temporary error (retry next cycle),
 * Added a flag to cause all 'offline' attempts to actually cause 'maintenance',
 * Use `id` invokations good for both OpenSolaris and Solaris 10,
@@ -58,6 +59,18 @@ Updates in release 0.11 as a difference from previously published 0.09:
   running off NFS storage,
 ** for users implementing iSCSI this should probably provide a template to
   require iSCSI clients to start before VMs.
+
+Updates in release 0.12 (2010-12-07):
+* Documentation from the forum post was converted into this README :)
+* Script and XML manifest example remained the same
+
+Updates in release 0.13 (2011-07-13):
+* Added command-line parameters to more easily specify VM_NAME or SMF_FMRI URL
+  when using the script "interactively"
+* Moderately tested override of a timezone used to run the VM as compared
+  to host TZ. NOTE: If the VM is executed as a local user and if that user's
+  profile somehow manages to override the TZ setting, it will be of higher
+  priority than this method's override. User-profile's TZ will be used then.
 
 All thinkable behaviors and variables have been parametrized with SMF
 service properties (group "vm/" or system props in groups "start/",
@@ -100,9 +113,9 @@ a tarball with a couple of files - "method script + xml manifest".
 Package file contains the same two important files plus some
 SVR4 packaging metadata to streamline script-version updates,
 and to keep track that the script is indeed installed on purpose
-in a certain zone. It also declares a dependency on SUNWvbox
-package to avoid automated installations wherever VirtualBox
-software is not installed.
+in a certain (Open)Solaris local zone. It also declares a package
+dependency on SUNWvbox package to avoid automated installations 
+wherever VirtualBox software is not installed.
 
 Either way it can be used for running VMs in global or local
 zones, owned (and executed) by "root" or less privileged users.
@@ -146,7 +159,7 @@ See docs, i.e.:
 
 a) Package format, global zone:
 
-    # gzcat COSvboxsvc-0.11.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x -G
 
 You probably want the -G flag. It doesn't block you from manually installing
@@ -157,13 +170,13 @@ zero or one per machine (there is no definite/hardcoded limit though). YMMV.
 
 To update the package you can simply remove the old version and install
 anew, i.e.:
-    # gzcat COSvboxsvc-0.11.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
     # pkgrm COSvboxsvc
     # pkgadd -d /tmp/x -G
 
 A cleaner way is to use an admin file to overwrite an existing package,
 i.e. one from LiveUpgrade:
-    # gzcat COSvboxsvc-0.11.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x -G -a /etc/lu/zones_pkgadd_admin
 
 Also note that this package "depends" on SUNWvbox, so that should be
@@ -171,7 +184,7 @@ installed beforehand.
 
 b) Package format, local zone: like in the global zone, but without the
 "-G" flag, i.e.:
-    # gzcat COSvboxsvc-0.11.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x
 
 c) Files: copy script to "/lib/svc/method/vbox.sh" and the XML manifest
@@ -179,7 +192,7 @@ file - to anywhere you can edit it.
 
 The SVR4 package places it into the "/var/svc/method/..." tree so it
 will be automatically imported after zone's reboot (updating the SMF
-repository if needed -as determined by XML file's version tag),
+repository if needed - as determined by XML file's version tag),
 but this is not a requirement if you plan to edit and import the
 file manually anyway.
 
@@ -273,26 +286,30 @@ instance levels with command-line:
 For individual VMs (instances) you can override existing settings or
 add some dependencies, etc. This often requires you to do some research
 and define correct additional "property groups" and then define whichever
-properties you need. 
+properties you need at the instance level.
 
 For example, to set SMF timeouts, you need to add the "start" and "stop"
 property groups with type "framework", and then define and set some property
 values in this group:
     # svccfg -s VM_NAME addpg start framework
     # svccfg -s VM_NAME addpg stop framework
-    # svccfg -s VM_NAME setprop start/timeout_seconds = integer: 120
-    # svccfg -s VM_NAME setprop stop/timeout_seconds = integer: 0
+    # svccfg -s VM_NAME setprop start/timeout_seconds = count: 120
+    # svccfg -s VM_NAME setprop stop/timeout_seconds = count: 0
 NOTE: a zero timeout value denotes absence of required timeout limitation.
 In this case, the VM can stop for as long as it takes to do properly,
 unless the OS is in a critical state like shutting down, and causes
 the VM process to be killed in some other way.
+
+NOTE: Some versions of SMF may have defined timeouts as "integer", others 
+as "count". See your error logs or other services to determine which type 
+is good for your OS.
 
 For XML-file manipulation, you do something simple like this:
     # svccfg export vbox > /tmp/vbox-svc.xml
     # vi /tmp/vbox-svc.xml
     ...
     # svccfg validate /tmp/vbox-svc.xml
-    # svccfg import /tmp/vbox-svc.xml[/code]
+    # svccfg import /tmp/vbox-svc.xml
 
 You're encouraged to use the XML file approach to define additional new
 VM instances. The XML file provided with the package contains all defined
@@ -351,10 +368,21 @@ you must export the "SMF_FMRI" environment variable with the complete
 SMF service instance name, for example:
     # SMF_FMRI="svc:/site/xvm/vbox:VM_NAME" /lib/svc/method/vbox.sh startgui
 
+Since release 0.13 you can also use a command-line switch to set SMF_FMRI
+(if no value was previously defined - it won't overwrite existing values):
+    # /lib/svc/method/vbox.sh -vm VM_NAME startgui
+or
+    # /lib/svc/method/vbox.sh -svc svc:/site/xvm/vbox:VM_NAME startgui
+or
+    # /lib/svc/method/vbox.sh -svc vbox:VM_NAME reset
+The "-vm" flag appends the VM_NAME to the standard service base name, while
+the "-svc" flag allows to set a full or shortcut SMF_FMRI URL.
+
 Currently there are such command-line methods as:
 * getstate|state|status - summarize VM state as returned by VirtualBox
   query state, and SMF instance state.
-* reboot - try to gracefully reboot the VM
+* reboot [ifruns] - try to gracefully reboot the VM [if it's currently running]
+  This will attempt methods: acpipowerbutton -> poweroff -> reset -> start
 * reset - try to quickly reset the VM
 * startgui - save the VM state, and restart it with the GUI-mode VirtualBox
   (in VNC console to the headless host servers, in my case). If all goes OK,
@@ -362,7 +390,7 @@ Currently there are such command-line methods as:
   You should test this before production, because this may lead to aborted
   VMs, i.e. if X11 is under-configured on a specific host system.
   When you're done with the graphical access to the VM, go to its window
-  menu and select "Machine / Close /Save state".
+  menu and select "Machine / Close / Save state".
   When the VM is saved, the command-line-mode "vbox.sh" script exits, and
   the VM resumes as an SMF service instance automatically.
 ** I confess this has failed on me more than once on some hosts (usually

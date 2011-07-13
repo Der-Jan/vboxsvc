@@ -7,8 +7,8 @@
 #
 # Copyright (c) 2009 Alexandre Dumont
 # (C) 2009 minor patches by Jim Klimov: start "saved" machines
-# (C) 2010 larger patches by Jim Klimov, JCS COS&HT
-#       $Id: vbox.sh,v 1.32 2010/08/24 13:35:12 jim Exp $
+# (C) 2010-2011 larger patches by Jim Klimov, JCS COS&HT
+#       $Id: vbox.sh,v 1.46 2011/07/13 17:47:04 jim Exp $
 #	* process aborted, paused VM's
 #	* "vm/debug_smf" flag, "vm/nice" flag.
 #       * Inherit service-level default attribute values.
@@ -24,13 +24,15 @@
 #	** Special flag 'vm/offline_is_maint = true' causes the service to
 #	  always go into SMF 'maintenance' mode, even if it can technically
 #	  go 'offline'.
+#	* Setting of a timezone value to change the VM's "hardware clock" zone
+#	  i.e. to UTC for all server VMs regardless of host OS default timezone
 #	* Command-line mode to intercept a VM into GUI mode,
 #	  then return it to SMF execution
 #	* Hook to a procedure (ext script) to check states of services
 #	  running inside the VM (i.e. ping, check website or DB) and react
 #	  by reset or maintenance... See $KICKER_VMSVCCHECK_* params.
 #	* Graceful Reboot/Quick Reset actions
-#	* Some features require GNU date (gdate) in PATH, see $GDATE below.
+#    NOTE: Some features require GNU date (gdate) in PATH, see $GDATE below.
 #
 #
 # Permission is hereby granted, free of charge, to any person
@@ -55,14 +57,20 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 printHelp() {
+    echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2011 by Jim Klimov,"
+    echo "         building upon work (C) 2009 by Alexandre Dumont"
     echo "This method script supports SMF methods: { start | stop }"
     echo "Requires set SMF_FMRI environment variable which points to a VM instance."
     echo "VMs may be owned and run by unprivileged users, in local or global zones."
     echo ""
-    echo "KICKER loop to watch VM state re-reads variables each cycle, so"
+    echo "The KICKER loop to watch VM state re-reads variables each cycle, so"
     echo "'svccfg -s VM_NAME ... ; svcadm refresh VM_NAME' works dynamically."
     echo ""
-    echo "It also supports following command-line mode methods:"
+    echo "Possible command-line options to specify VM_NAME (ultimately SMF_FMRI):"
+    echo "	-s|-svc SVC_URL	SMF service name, possibly an SMF shortcut name"
+    echo "	-vm VM_NAME    	'VM_NAME', as the SMF instance name (suffix after colon)"
+    echo ""
+    echo "This script also supports following command-line mode methods:"
     echo ""
     echo "	getstate|state|status	Prints states of SMF service (and spawned"
     echo "				processes if any - VMs may be parented by"
@@ -83,13 +91,44 @@ printHelp() {
     echo "				acpipowerbutton -> poweroff -> reset -> start"
     echo "				Probably disrupts GUI due to VM process exit."
     echo "	reset			Resets the VM OS by trying reset action."
-    echo "		NOTE that for VBox 3.0.12 sometimes the reset Windows guest"
+    echo "		NOTE that for VBox 3.0.12 sometimes the reset'ed Windows guest"
     echo "		VM's hang on boot while poweroff-poweron'ed ones start ok"
     echo ""
 
 }
 
+while [ $# -gt 1 ]; do
+    ### NOTE: We leave last param for normal processing below
+    case "$1" in
+	help|--help|-help|-h|'-?'|'/?')
+	    printHelp
+	    ;;
+	-s|-svc) [ -z "$SMF_FMRI" ] && SMF_FMRI="$2"
+	    shift 1 ;;
+	-vm) [ -z "$SMF_FMRI" ] && SMF_FMRI="svc:/site/xvm/vbox:$2"
+	    shift 1 ;;
+	reboot) ### This presumably begins other script parameters
+		### parsed below, now break this cycle
+	    break ;;
+	*)  echo "WARN: Unrecognized command-line parameter: '$1'" ;;
+    esac
+    shift 1
+done
+
+### Failure to include this is fatal, by design - no SMF installed
+if [ ! -f /lib/svc/share/smf_include.sh -o \
+     ! -r /lib/svc/share/smf_include.sh -o \
+     ! -s /lib/svc/share/smf_include.sh ]; then
+    echo "ERROR: SMF not installed? Can't use file /lib/svc/share/smf_include.sh" >&2
+    exit 95
+fi
 . /lib/svc/share/smf_include.sh
+
+if [ $# -lt 1 ]; then
+    echo "ERROR on command-line: no params left to work with!" >&2
+    printHelp
+    exit $SMF_EXIT_ERR
+fi
 
 ### SMF_FMRI is the name of the target service. This allows multiple instances
 ### to use the same script.
@@ -103,11 +142,34 @@ if [ -z "$SMF_FMRI" ]; then
           exit 0
 	  ;;
      *)
-          echo "ERROR: SMF framework variables are not initialized."
+          echo "ERROR: SMF framework variables are not initialized." >&2
 	  exit $SMF_EXIT_ERR
 	  ;;
    esac
 fi
+
+### Sanity check for accepted external variables
+OUT="`svcs -H $SMF_FMRI`"
+RES=$?
+
+if [ "$RES" != 0 -o `echo "$OUT" | wc -l` != 1 ]; then
+    echo "ERROR: Provided SMF_FMRI value does not point to one SMF service name" >&2
+    echo "	SMF_FMRI = '$SMF_FMRI'" >&2
+    echo "	svcs check: result = '$RES', output =" >&2
+    echo "===" >&2
+    echo "$OUT" >&2
+    echo "===" >&2
+    echo "ERROR: SMF framework variables are not initialized properly." >&2
+    exit $SMF_EXIT_ERR
+fi
+
+_SMF_FMRI="`echo "$OUT" | awk '{print $NF}'`"
+if [ x"$_SMF_FMRI" != x"$SMF_FMRI" ]; then
+    echo "INFO: Replacing SMF_FMRI value from '$SMF_FMRI' to '$_SMF_FMRI'"
+    SMF_FMRI="$_SMF_FMRI"
+fi
+unset _SMF_FMRI
+
 SMF_BASE="`echo "$SMF_FMRI" | sed 's/^\(.*\:.*\)\(\:.*\)$/\1/'`"
 INSTANCE="$( echo $SMF_FMRI | cut -d: -f3 )"
 
@@ -177,26 +239,43 @@ get_nicerun() {
    echo "$NICERUN"
 }
 
+get_tz_vm() {
+    TZ_VM="$( getproparg vm/timezone )"
+
+    [ x"$TZ_VM" = x ] && return
+
+    if [ x"$TZ" != x"$TZ_VM" ]; then
+	echo "INFO: Replacing VM time zone from current '$TZ' to '$TZ_VM'" >&2
+	echo "TZ='$TZ_VM'"
+    fi
+}
+
 resume_vm() {
     # For paused VM's
     NICERUN="`get_nicerun`"
     echo "INFO: NICERUN='$NICERUN'" >&2
 
+    ( TZVM="`get_tz_vm`"    
+    [ x"$TZVM" != x ] && export $TZVM
     $RUNAS $NICERUN /usr/bin/VBoxManage controlvm "$1" resume
+    )
 }
-
 
 start_vm() {
     NICE="$( GETPROPARG_QUIET=true getproparg vm/nice )"
     NICERUN="`get_nicerun`"
+
+    ( TZVM="`get_tz_vm`"    
+    [ x"$TZVM" != x ] && export $TZVM
 
     if [ x"$NICERUN" = x -o x"$NICE" = x -o x"$NICE" = x0 ]; then
         echo "INFO: Normal RUN:	VBoxManage..." >&2
         $RUNAS /usr/bin/VBoxManage startvm "$1" --type vrdp
     else
         echo "INFO: NICERUN:	$NICERUN VBoxHeadless..." >&2
-        $RUNAS $NICERUN /usr/bin/VBoxHeadless -startvm "$1" --vrdp config &
+	$RUNAS $NICERUN /usr/bin/VBoxHeadless -startvm "$1" --vrdp config &
     fi
+    )
 }
 
 stop_vm() {
@@ -215,7 +294,10 @@ stop_vm() {
             ;;
     esac
 
+    ( TZVM="`get_tz_vm`"    
+    [ x"$TZVM" != x ] && export $TZVM
     $RUNAS /usr/bin/VBoxManage controlvm "$1" "$STOP_METHOD"
+    )
     RES=$?
 
     ### Savestate action exits when the state is saved.
@@ -225,6 +307,9 @@ stop_vm() {
 	savestate)
 	    STOP_TIMEOUT="`( getproparg vm/stop_timeout )`" || STOP_TIMEOUT="-1"
 	    [ x"$STOP_TIMEOUT" = x ] && STOP_TIMEOUT="-1"
+	    [ "$STOP_TIMEOUT" -le 0 ] && \
+		echo "INFO: Method script will not enforce a stop timeout. SMF may..." || \
+		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion..."
 	    STOP_COUNT=0
 
 	    VM_STATE="$( vm_state $1 )"
@@ -252,6 +337,9 @@ stop_vm() {
         poweroff|acpipowerbutton)
 	    STOP_TIMEOUT="`( getproparg vm/stop_timeout )`" || STOP_TIMEOUT="-1"
 	    [ x"$STOP_TIMEOUT" = x ] && STOP_TIMEOUT="-1"
+	    [ "$STOP_TIMEOUT" -le 0 ] && \
+		echo "INFO: Method script will not enforce a stop timeout. SMF may..." || \
+		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion..."
 	    STOP_COUNT=0
 
 	    VM_STATE="$( vm_state $1 )"
@@ -296,27 +384,51 @@ reboot_vm() {
     ### can use "$2" == "ifruns" to poweron the VM only if it was running
 
     VM_STATE="$( vm_state $1 )"
+    INITIAL_VM_STATE="$VM_STATE"
 
-    case "x$VM_STATE" in
+    case "x$INITIAL_VM_STATE" in
     xrunning|xstarting|xrestoring|xpaused)
-        FORCE_STOP_METHOD=acpipowerbutton stop_vm "$1" || \
-	FORCE_STOP_METHOD=poweroff stop_vm "$1" || \
-        FORCE_STOP_METHOD=reset stop_vm "$1"
+	echo "INFO: `date`: Beginning to reboot VM '$1' (currently '$INITIAL_VM_STATE')..."
+	echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely!"
+
+	echo "INFO: `date`: Trying acpipowerbutton..."
+        FORCE_STOP_METHOD=acpipowerbutton stop_vm "$1"
+	RES=$?
+
+	if [ $RES != 0 ]; then
+	    echo "INFO: `date`: That failed ($RES)"
+	    echo "INFO: `date`: Trying poweroff..."
+	    FORCE_STOP_METHOD=poweroff stop_vm "$1"
+	    RES=$?
+
+	    if [ $RES != 0 ]; then
+                echo "INFO: `date`: That failed ($RES)"
+	        echo "INFO: `date`: Trying reset..."
+    		FORCE_STOP_METHOD=reset stop_vm "$1"
+		RES=$?
+	    fi
+	fi
+	echo "INFO: `date`: Done stopping (result=$RES)"
+	sleep 5
 	;;
     esac
 
     RET=-1
     if [ x"$2" = x"ifruns" ]; then
-	case "x$VM_STATE" in
+	case "x$INITIAL_VM_STATE" in
 	xrunning|xstarting|xrestoring|xpaused)
+	    echo "INFO: `date`: Starting VM '$1' because it was '$INITIAL_VM_STATE'..."
 	    start_vm "$1"
 	    RET=$?
 	    ;;
+	x*) echo "INFO: `date`: VM '$1' was not running ($INITIAL_VM_STATE), not starting!" ;;
 	esac
     else
+	echo "INFO: `date`: Starting VM '$1'..."
 	start_vm "$1"
 	RET=$?
     fi
+    echo "INFO: `date`: Done starting (result=$RET)"
 
     return $RET
 }
@@ -558,12 +670,31 @@ kick() {
 		"$KICKER_VMSVCCHECK_METHOD" $KICKER_VMSVCCHECK_METHOD_PARAMS
 		KICKER_VMSVCCHECK_RESULT=$?
 
-		### TODO: This logic was implemented from theory
-		### but not yet checked in field practice
+		### TODO: Test more. This logic was implemented from theory
+		### but not yet extensively checked in field practice
+
+### Hook for an arbitrary method+params of checking that the VM provides
+### its services (web, dbms, ping, etc). As far as vbox-svc is concerned,
+### this external method is an executable program or script which should
+### return an error code of:
+###   0 for okay (clear counter),
+###   1 for failure detected, increase counter, reboot VM on overflow
+###   2 for instant reboot VM (acpipoweroff-poweroff-reset-poweron),
+###   3 for instant cause SMF maintenance
+### It is encouraged that the method uses some limitation of its execution
+### time, as each loop cycle will have to wait for the check to complete.
+### Note for COS&HT users: see /opt/COSas/bin/timerun.sh
+### Note: for reboots to work it is critical to set a vm/stop_timeout
+
 		case "$KICKER_VMSVCCHECK_RESULT" in
-		    0) VMSVCCHECK_COUNTER="";; ### OK
-		    1)  if ! addVMSvcCheckCounter; then
-			    echo "KICKER-INFO: requesting VM reboot due to service-check failure..."
+		    0) ### OK
+			[ x"$VMSVCCHECK_COUNTER" != x ] && echo "KICKER-INFO: resetting error counter (was $VMSVCCHECK_COUNTER)"
+			VMSVCCHECK_COUNTER=""
+			;;
+		    1) ### Single error
+			echo "KICKER-INFO: increasing error counter (was ${VMSVCCHECK_COUNTER:-0})"
+		        if ! addVMSvcCheckCounter; then
+			    echo "KICKER-INFO: requesting VM reboot due to repeated service-check failures..."
 			    if reboot_vm "$INSTANCE"; then
 				echo "KICKER-INFO: resetting error counters and startup-delay check"
 				NEW_SVC_STATE=online
@@ -576,12 +707,21 @@ kick() {
 			    fi
 			fi
 			;;
-		    2) reboot_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
+		    2) ### Instant reboot
+			echo "KICKER-INFO: requesting VM reboot due to a fatal service-check failure..."
+			if reboot_vm "$INSTANCE"; then
+			    echo "KICKER-INFO: resetting error counters and startup-delay check"
+			    NEW_SVC_STATE=online
+			    VMSVCCHECK_COUNTER=""
+		        else
+			    NEW_SVC_STATE=maintenance
+			fi
 			if [ x"$GDATE" != x -a -x "$GDATE" ]; then
 			    TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
 			fi
 			;;
 		    3) ### cause SMF maintenance
+			echo "KICKER-INFO: requesting SMF maintenance due to critical service-check failures..."
 			NEW_SVC_STATE="maintenance"
 			;;
 		esac
@@ -1078,7 +1218,7 @@ fi
 [ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
 
 SVC_RET=-1
-case $1 in
+case "$1" in
 start)
     stopOldKicker
     testBlockFile
