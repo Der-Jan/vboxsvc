@@ -3,7 +3,7 @@
 <!--
    http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
 
-   $Id: vbox-svc.xml,v 1.19 2011/07/13 17:47:04 jim Exp $
+   $Id: vbox-svc.xml,v 1.21 2011/11/23 03:37:37 jim Exp $
    This manifest is distributed under the following MIT License terms:
 
    Copyright (c) 2009 Alexandre Dumont
@@ -73,7 +73,7 @@
       grouping='optional_all'
       restart_on='none'
       type='service'>
-         <service_fmri value='svc:/network/nfs/server:default' />
+         <service_fmri value='svc:/network/nfs/client:default' />
 	 <service_fmri value='svc:/system/filesystem/autofs:default' />
    </dependency>
 
@@ -206,7 +206,7 @@
 	Requires gdate in PATH.
         NOTE: possible security issue, as the specified block file will
         be removed (and an enabled SMF operator can try to do that, 
-        although only with his user privileges.
+        although only with his user privileges).
         NOTE: possible DoS vector, so can be disabled globally or per-VM
         (i.e. after RBAC is in place) -->
       <propval name='kicker_blockfile_enabled' type='boolean' value='true' />

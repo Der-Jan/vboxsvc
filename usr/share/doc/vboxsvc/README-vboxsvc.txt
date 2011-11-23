@@ -65,12 +65,18 @@ Updates in release 0.12 (2010-12-07):
 * Script and XML manifest example remained the same
 
 Updates in release 0.13 (2011-07-13):
-* Added command-line parameters to more easily specify VM_NAME or SMF_FMRI URL
-  when using the script "interactively"
+* Added command-line parameters to more easily specify VM_NAME or SMF_FMRI
+  URL when using the script "interactively"
 * Moderately tested override of a timezone used to run the VM as compared
   to host TZ. NOTE: If the VM is executed as a local user and if that user's
   profile somehow manages to override the TZ setting, it will be of higher
   priority than this method's override. User-profile's TZ will be used then.
+
+Updates in release 0.14 (2011-11-23) are mostly cosmetic:
+* Fixed long sleep()s into a series of 1-second sleeps, so that break
+  signals are processed more quickly and service offlining happens faster.
+* Some typo fixes and indentation fixes.
+* Some implicitly hardcoded default values are now explicitly set.
 
 All thinkable behaviors and variables have been parametrized with SMF
 service properties (group "vm/" or system props in groups "start/",
