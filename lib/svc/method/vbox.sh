@@ -1,14 +1,16 @@
 #!/usr/bin/bash
 #
 # Started by:
-# http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
+#   http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
+# Maintained at:
+#   http://vboxsvc.sourceforge.net/
 #
 # This SMF method is distributed under the following MIT License terms:
 #
 # Copyright (c) 2009 Alexandre Dumont
 # (C) 2009 minor patches by Jim Klimov: start "saved" machines
-# (C) 2010-2011 larger patches by Jim Klimov, JCS COS&HT
-#       $Id: vbox.sh,v 1.49 2011/11/23 13:53:06 jim Exp $
+# (C) 2010-2012 larger patches by Jim Klimov, JCS COS&HT
+#       $Id: vbox.sh,v 1.56 2012/01/30 18:30:45 jim Exp $
 #	* process aborted, paused VM's
 #	* "vm/debug_smf" flag, "vm/nice" flag.
 #       * Inherit service-level default attribute values.
@@ -31,7 +33,11 @@
 #	* Hook to a procedure (ext script) to check states of services
 #	  running inside the VM (i.e. ping, check website or DB) and react
 #	  by reset or maintenance... See $KICKER_VMSVCCHECK_* params.
-#	* Graceful Reboot/Quick Reset actions
+#	* Graceful Poweroff/Reboot/Quick Reset actions
+#	* Create ZFS snapshots (if enabled) before starting/after stopping VM
+#	  The feature is OFF BY DEFAULT because it can consume space without
+#	  control and it "is possible" that backends are not ZFS-based.
+#	  Removing the old snapshots is the user's task (adapt zfs-auto-snap?)
 #    NOTE: Some features require GNU date (gdate) in PATH, see $GDATE below.
 #
 #
@@ -56,9 +62,21 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
+# Ensure we're using a pretty normal PATH by default; some utilities require
+# Sun versions of tools (df); others may need GNU (gdate)
+PATH="\
+/bin:/usr/bin:/usr/local/bin:\
+/sbin:/usr/sbin:/usr/local/bin:\
+/opt/sfw/bin:/usr/sfw/bin:\
+/opt/gnu/bin:/usr/gnu/bin:\
+$PATH"
+export PATH
+
+[ x"$VBOXSVC_TIMEOUT_OVERRIDE" = x ] && VBOXSVC_TIMEOUT_OVERRIDE=-1
+
 printHelp() {
-    echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2011 by Jim Klimov,"
-    echo "	$Id: vbox.sh,v 1.49 2011/11/23 13:53:06 jim Exp $"
+    echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2012 by Jim Klimov,"
+    echo "	$Id: vbox.sh,v 1.56 2012/01/30 18:30:45 jim Exp $"
     echo "	see http://vboxsvc.sourceforge.net/ for possible updates"
     echo "	building upon work (C) 2009 by Alexandre Dumont"
     echo "This method script supports SMF methods: { start | stop }"
@@ -71,6 +89,8 @@ printHelp() {
     echo "Possible command-line options to specify VM_NAME (ultimately SMF_FMRI):"
     echo "	-s|-svc SVC_URL	SMF service name, possibly an SMF shortcut name"
     echo "	-vm VM_NAME    	'VM_NAME', as the SMF instance name (suffix after colon)"
+    echo "For reboot/poweroff methods you can specify timeout override to stop faster:"
+    echo "	-t timeout	Seconds, to be used instead of defaults/smf timeouts"
     echo ""
     echo "This script also supports following command-line mode methods:"
     echo ""
@@ -89,6 +109,12 @@ printHelp() {
     echo ""
     echo "	startgui (req: DISPLAY)	Saves VM state if needed, (re)starts with GUI"
     echo ""
+    echo "	zfssnap			Snapshots VM-related ZFS datasets according"
+    echo "				to SMF config (forces zfssnap_flag=true)"
+    echo ""
+    echo "	poweroff		Powers off the VM by trying"
+    echo "				acpipowerbutton -> poweroff"
+    echo "				Probably disrupts GUI due to VM process exit."
     echo "	reboot [ifruns]		(Conditionally) Reboots the VM by trying"
     echo "				acpipowerbutton -> poweroff -> reset -> start"
     echo "				Probably disrupts GUI due to VM process exit."
@@ -133,6 +159,15 @@ while [ $# -gt 1 ]; do
 	    shift 1 ;;
 	-vm) [ -z "$SMF_FMRI" ] && SMF_FMRI="svc:/site/xvm/vbox:$2"
 	    shift 1 ;;
+	-t) VBOXSVC_TIMEOUT_OVERRIDE="$2"
+	    if [ x"$VBOXSVC_TIMEOUT_OVERRIDE" != x \
+		-a "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
+		[ x"$DEBUG_SMF" = xtrue ] && echo "INFO: Overriding poweroff timeout: '$VBOXSVC_TIMEOUT_OVERRIDE'" >&2
+	    else
+		echo "WARN: Invalid timeout value '$VBOXSVC_TIMEOUT_OVERRIDE' ignored" >&2
+		VBOXSVC_TIMEOUT_OVERRIDE=-1
+	    fi
+	    shift ;;
 	reboot) ### This presumably begins other script parameters
 		### parsed below, now break this cycle
 	    break ;;
@@ -222,6 +257,13 @@ getproparg() {
         val="`$RUNAS svcprop -p "$1" "$SMF_FMRI"`"
     fi
 
+    if [ x"$val" = x"''" -o x"$val" = x'""' ]; then
+        [ x"$GETPROPARG_QUIET" = x"true" ] || echo "INFO: Using instance-level attribute '$1' set to empty ($var)" >&2
+        val=""
+        echo ""
+        return
+    fi
+
     [ -n "$val" ] && echo "$val" && return
 
     if [ x"$GETPROPARG_INHERIT" = xfalse ]; then
@@ -240,6 +282,12 @@ getproparg() {
     if [ -n "$val" ]; then
         [ x"$GETPROPARG_QUIET" != x"true" ] && \
 	    echo "INFO: Using service-general default attribute '$1' = '$val'" >&2
+
+        if [ x"$val" = x"''" -o x"$val" = x'""' ]; then
+	    [ x"$GETPROPARG_QUIET" = x"true" ] || echo "INFO: Using service-general attribute '$1' set to empty ($var)" >&2
+    	    val=""
+	fi
+
         echo "$val"
         return
     fi
@@ -270,15 +318,22 @@ get_tz_vm() {
     TZ_VM="$( getproparg vm/timezone )"
 
     [ x"$TZ_VM" = x ] && return
+    [ x"$TZ_VM" = x"''" ] && return
+    [ x"$TZ_VM" = x'""' ] && return
 
     if [ x"$TZ" != x"$TZ_VM" ]; then
 	echo "INFO: Replacing VM time zone from current '$TZ' to '$TZ_VM'" >&2
 	echo "TZ='$TZ_VM'"
+    else
+	[ x"$DEBUG_SMF" = xtrue ] && \
+	    echo "INFO: Using current time zone for VM: TZ='$TZ'" >&2
     fi
 }
 
 resume_vm() {
     # For paused VM's
+    zfssnap "$1" "preresume"
+
     NICERUN="`get_nicerun`"
     echo "INFO: NICERUN='$NICERUN'" >&2
 
@@ -289,6 +344,8 @@ resume_vm() {
 }
 
 start_vm() {
+    zfssnap "$1" "prestart"
+
     NICE="$( GETPROPARG_QUIET=true getproparg vm/nice )"
     NICERUN="`get_nicerun`"
 
@@ -323,6 +380,7 @@ stop_vm() {
 
     ( TZVM="`get_tz_vm`"    
       [ x"$TZVM" != x ] && export $TZVM
+      echo "INFO: Using STOP_METHOD='$STOP_METHOD'..."
       $RUNAS /usr/bin/VBoxManage controlvm "$1" "$STOP_METHOD"
     )
     RES=$?
@@ -362,8 +420,12 @@ stop_vm() {
 	    done
 	    ;;
         poweroff|acpipowerbutton)
-	    STOP_TIMEOUT="`( getproparg vm/stop_timeout )`" || STOP_TIMEOUT="-1"
-	    [ x"$STOP_TIMEOUT" = x ] && STOP_TIMEOUT="-1"
+	    if [ "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
+		STOP_TIMEOUT="$VBOXSVC_TIMEOUT_OVERRIDE"
+	    else
+		STOP_TIMEOUT="`( getproparg vm/stop_timeout )`" || STOP_TIMEOUT="-1"
+	        [ x"$STOP_TIMEOUT" = x ] && STOP_TIMEOUT="-1"
+	    fi
 	    [ "$STOP_TIMEOUT" -le 0 ] && \
 		echo "INFO: Method script will not enforce a stop timeout. SMF may..." || \
 		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion..."
@@ -395,11 +457,13 @@ stop_vm() {
 	reset) ;;
     esac
 
+    zfssnap "$1" "poststop-$STOP_METHOD-$RES" || {
     # Occasionally a restart attempt fails because "a session is still open"
     # Unscientific WORKAROUND: sleep a little for other VBox processes
     # to "release" the VM
     echo "INFO: sync and nap..."
-    sync; sleep 3
+    sync; sleeper 3
+    }
 
     echo "INFO: VM '$1' state is now: '$( vm_state $1 )'"
 
@@ -416,27 +480,36 @@ reboot_vm() {
     case "x$INITIAL_VM_STATE" in
     xrunning|xstarting|xrestoring|xpaused)
 	echo "INFO: `date`: Beginning to reboot VM '$1' (currently '$INITIAL_VM_STATE')..."
-	echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely!"
+	if [ "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
+	    echo "INFO: Using timeout override value: '$VBOXSVC_TIMEOUT_OVERRIDE'"
+	else
+	    echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely!"
+	fi
 
-	echo "INFO: `date`: Trying acpipowerbutton..."
-        FORCE_STOP_METHOD=acpipowerbutton stop_vm "$1"
+	_FORCE_STOP_METHOD=acpipowerbutton
+	echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+        FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 	RES=$?
 
 	if [ $RES != 0 ]; then
 	    echo "INFO: `date`: That failed ($RES)"
-	    echo "INFO: `date`: Trying poweroff..."
-	    FORCE_STOP_METHOD=poweroff stop_vm "$1"
+	    _FORCE_STOP_METHOD=poweroff
+	    echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+	    FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 	    RES=$?
 
 	    if [ $RES != 0 ]; then
                 echo "INFO: `date`: That failed ($RES)"
-	        echo "INFO: `date`: Trying reset..."
-    		FORCE_STOP_METHOD=reset stop_vm "$1"
+		_FORCE_STOP_METHOD=reset
+	        echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+    		FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 		RES=$?
 	    fi
 	fi
 	echo "INFO: `date`: Done stopping (result=$RES)"
-	sleeper 5
+
+	zfssnap "$1" "reboot-poststop-$_FORCE_STOP_METHOD-$RES" || \
+	    sleeper 5
 	;;
     esac
 
@@ -460,14 +533,189 @@ reboot_vm() {
     return $RET
 }
 
+poweroff_vm() {
+    ### Part of reboot_vm's logic
+    ### power off VM "$1" via (acpipoweroff-poweroff)
+
+    VM_STATE="$( vm_state $1 )"
+    INITIAL_VM_STATE="$VM_STATE"
+
+    case "x$INITIAL_VM_STATE" in
+    xrunning|xstarting|xrestoring|xpaused)
+	echo "INFO: `date`: Beginning to poweroff VM '$1' (currently '$INITIAL_VM_STATE')..."
+	if [ "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
+	    echo "INFO: Using timeout override value: '$VBOXSVC_TIMEOUT_OVERRIDE'"
+	else
+	    echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely!"
+	fi
+
+	_FORCE_STOP_METHOD=acpipowerbutton
+	echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+        FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
+	RES=$?
+
+	if [ $RES != 0 ]; then
+	    echo "INFO: `date`: That failed ($RES)"
+	    _FORCE_STOP_METHOD=poweroff
+	    echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+	    FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
+	    RES=$?
+
+	    if [ $RES != 0 ]; then
+                echo "INFO: `date`: That failed ($RES)"
+		### TODO: Kill?
+	    fi
+	fi
+	echo "INFO: `date`: Done stopping (result=$RES)"
+
+	zfssnap "$1" "poweroff-poststop-$_FORCE_STOP_METHOD-$RES" || \
+	    sleeper 5
+	;;
+    esac
+    return $RET
+}
+
 vm_state() {
+    ### Get current state of VM "$1"
     $RUNAS /usr/bin/VBoxManage showvminfo "$1" --details --machinereadable | \
         grep VMState\= | tr -s '"' ' ' | cut -d " " -f2
 
     if [ $? -ne 0 ]; then
-        echo >&2 "ERROR: Failed to get VMState for VM $1"
+        echo "ERROR: Failed to get VMState for VM $1" >&2
         exit $SMF_EXIT_ERR_FATAL
     fi
+}
+
+ZFSSNAP_FLAG_OVERRIDE=""
+zfssnap() {
+    ### Try to create a snapshot of the VM-related datasets
+    ### (will sleep a little and sync first).
+    ###  $1	vm_name
+    ###  $2	prestart|poststop
+    ### Snapshot naming format:
+    ###  dataset@{prefix}:{vm_name}:{prestart|poststop}:{vm_state}:{timestamp}
+    ### Datasets are listed in SMF config and/or autodetected.
+    ### NOTE: Removal of obsolete snapshots is the user's task (see for example
+    ### zfs-auto-snap service for its removal of snapshots due to free space
+    ### and/or snapshot age constraints).
+    ### NOTE: Paths and dataset names should not contain spaces!
+
+    if [   x"$ZFSSNAP_FLAG_OVERRIDE" = xtrue \
+	-o x"$ZFSSNAP_FLAG_OVERRIDE" = xfalse ]; then
+	ZFSSNAP_FLAG="$ZFSSNAP_FLAG_OVERRIDE"
+    else
+        ZFSSNAP_FLAG="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg vm/zfssnap_flag )" || \
+	    ZFSSNAP_FLAG=false
+    fi
+
+    if [ x"$ZFSSNAP_FLAG" != xtrue ]; then
+	[ x"$DEBUG_SMF" = xtrue ] && echo "INFO: zfssnap_flag='$ZFSSNAP_FLAG' for VM '$1': '$2', doing nothing" >&2
+	return 1
+    fi
+    ### Virtual Machine's state according to VirtualBox
+    VM_STATE="$( vm_state $INSTANCE )"
+
+    echo "INFO: Asked to create ZFS snapshots for VM '$1': '$2' ($VM_STATE)..."
+
+    ZFSSNAP_PREFIX="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg zfssnap_prefix )" || \
+	ZFSSNAP_PREFIX=""
+    [ x"$ZFSSNAP_PREFIX" = x ] && ZFSSNAP_PREFIX="vboxsvc-auto-snap"
+
+    SNAPTAG="$ZFSSNAP_PREFIX:$1:$2:$VM_STATE:`TZ=UTC date "+%Y-%m-%dz%H:%M"`"
+
+    ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg zfssnap_dslist )" || \
+	ZFSSNAP_DSLIST="auto"
+    ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg zfssnap_dslist_append )" || \
+	ZFSSNAP_DSLIST_APPEND=""
+
+    if [ x"$ZFSSNAP_DSLIST" = xauto ]; then
+	ZFSSNAP_DSLIST=""
+
+        ### TODO: Not certain about SCSI grepping, needs testing
+	echo "INFO: Trying to detect VM-related ZFS datasets..."
+	VM_FILES="$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
+		--details --machinereadable | \
+    	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*)="/' | \
+	    cut -d '"' -f2 )"
+
+        if [ $? -ne 0 ]; then
+	    echo "ERROR: Failed to get list of component files for VM $1" >&2
+    	    exit $SMF_EXIT_ERR_FATAL
+	fi
+
+	### Solaris 'df' allows to pass it filenames and see their FS mounts
+	if [ x"$VM_FILES" != x ]; then
+	    [ x"$DEBUG_SMF" = xtrue ] && \
+		echo "DEBUG: VM_FILES=$VM_FILES"
+
+	    ### NOTE: Technically this can hang or timeout for NFS shares
+	    ### Such condition would not let the VM work anyway, so special
+	    ### tricks like time-limited running are not required here.
+	    ZFSSNAP_DSLIST="`/bin/df -k $VM_FILES | awk '{print $NF}' | \
+		grep '/' | sort | uniq | while read D; do \
+		[ -d "$D/.zfs/snapshot" ] && echo "$D"; done`"
+
+	    [ x"$DEBUG_SMF" = xtrue ] && \
+		echo "DEBUG: ZFSSNAP_DSLIST=$ZFSSNAP_DSLIST"
+        fi
+    fi
+
+    echo "INFO: Ensure all writes have ceased (sleep+sync+sleep)..."
+    sleeper 3
+    sync
+    sleeper 2
+
+    echo "INFO: Trying to snapshot VM-related ZFS datasets '@$SNAPTAG'..."
+    for _DS in $ZFSSNAP_DSLIST $ZFSSNAP_DSLIST_APPEND; do echo "$_DS"; done | \
+    sort | uniq | while read DS; do
+	SNAP=yes
+	case "$DS" in
+	-)  ;;	### Skip requested explicitly
+	/*) ### Assume it is a ZFS ZPL mountpoint
+	    if [ x"$SNAP" = xyes -a ! -d "$DS" ]; then
+		echo "ERROR: '$DS' is not a directory, skipping..."
+		SNAP=no
+	    fi
+
+	    if [ x"$SNAP" = xyes -a ! -d "$DS/.zfs/snapshot" ]; then
+		echo "ERROR: '$DS' is not a ZFS mountpoint, skipping..."
+                SNAP=no
+            fi
+
+	    if [ x"$SNAP" = xyes ]; then
+		if [ x"$RUNAS" != x ]; then
+		### Try as unprivileged user first, be nice ;)
+		### Might also be the only way it works over NFS idmap-ing...
+		    $RUNAS mkdir "$DS/.zfs/snapshot/$SNAPTAG" && SNAP=no
+		fi
+		[ x"$SNAP" = xyes ] && mkdir "$DS/.zfs/snapshot/$SNAPTAG" && SNAP=no
+	    fi
+
+	    if [ x"$SNAP" = xyes ]; then
+		echo "ERROR: failed to make a snapshot dir '$DS/.zfs/snapshot/$SNAPTAG'!" >&2
+            else
+                echo "INFO: created snapshot '$DS/.zfs/snapshot/$SNAPTAG'"
+	    fi
+	    ;;
+	*)  ### Assume it is a ZFS dataset name
+	    if [ x"$SNAP" = xyes ]; then
+		if [ x"$RUNAS" != x ]; then
+		### Try as unprivileged user first, be nice ;)
+		### Might also be the only way it works over NFS idmap-ing...
+		    $RUNAS zfs snapshot "$DS@$SNAPTAG" && SNAP=no
+		fi
+		[ x"$SNAP" = xyes ] && zfs snapshot "$DS@$SNAPTAG" && SNAP=no
+	    fi
+
+	    if [ x"$SNAP" = xyes ]; then
+		echo "ERROR: failed to make snapshot '$DS@$SNAPTAG'!" >&2
+	    else
+		echo "INFO: created snapshot '$DS@$SNAPTAG'"
+	    fi
+	    ;;
+	esac
+    done
+    return 0
 }
 
 ABORT_COUNTER=""
@@ -996,6 +1244,8 @@ start() {
     START_ABORTED_VM="$( getproparg vm/start_aborted_vm )" || START_ABORTED_VM=false
     START_PAUSED_VM="$( getproparg vm/start_paused_vm )" || START_PAUSED_VM=false
 
+#    zfssnap "$INSTANCE" "prestartSMF"
+
     case "x$VM_STATE" in
     xrunning|xstarting|xrestoring)
         echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is already in state $VM_STATE."
@@ -1047,6 +1297,8 @@ stop() {
         echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I won't stop it any further."
         ;;
     esac
+
+#    zfssnap "$INSTANCE" "poststopSMF"
 }
 
 stopOldKicker() {
@@ -1333,6 +1585,10 @@ stop)
     stop
     SVC_RET=$?
     ;;
+zfssnap)
+    ZFSSNAP_FLAG_OVERRIDE=true zfssnap "$INSTANCE" "manual-zfssnap"
+    SVC_RET=$?
+    ;;
 startgui)
     ### export SMF_FMRI='svc:/site/xvm/vbox:VM_NAME' in the caller
     if [ x"$SMF_FMRI" = x -o x"$INSTANCE" = x ]; then
@@ -1362,6 +1618,8 @@ startgui)
     echo "INFO: done stopping ($?)"
     echo ""
 
+    zfssnap "$INSTANCE" "prestartGUI"
+
     echo "INFO: trying to start VM '$INSTANCE' in GUI mode (DISPLAY='$DISPLAY', RUNAS='$RUNAS')..."
     if [ x"$RUNAS" != x ]; then
 	xhost +localhost
@@ -1371,6 +1629,8 @@ startgui)
 	/usr/bin/VBoxManage startvm "$INSTANCE" --type gui
         SVC_RET="$?"
     fi
+
+    zfssnap "$INSTANCE" "poststartGUI"
 
     [ -f "$KICKER_NOKICK_FILE_NAME" ] && $RUNAS rm -f "$KICKER_NOKICK_FILE_NAME"
 
@@ -1403,6 +1663,29 @@ getstate|state|status)
     ### export SMF_FMRI='svc:/site/xvm/vbox:VM_NAME' in the caller
     getState
     SVC_RET=$?
+    exit $SVC_RET
+    ;;
+poweroff)
+    ### export SMF_FMRI='svc:/site/xvm/vbox:VM_NAME' in the caller
+    RUN_USER="`get_run_as 2>/dev/null`"
+    get_run_as >/dev/null
+
+    KICKER_NOKICK_FILE_NAME="$( GETPROPARG_QUIET=true getproparg vm/kicker_nokick_file_name)"
+    [    x"$KICKER_NOKICK_FILE_NAME" = x'""' \
+      -o x"$KICKER_NOKICK_FILE_NAME" = x"''" \
+      -o x"$KICKER_NOKICK_FILE_NAME" = x \
+    ] && KICKER_NOKICK_FILE_NAME="$KICKER_PIDFILE_NAME.nokick"
+
+    $RUNAS touch "$KICKER_NOKICK_FILE_NAME"
+
+    poweroff_vm "$INSTANCE" $2
+    SVC_RET=$?
+
+#    stopOldKicker
+
+    [ -f "$KICKER_NOKICK_FILE_NAME" ] && \
+	$RUNAS rm -f "$KICKER_NOKICK_FILE_NAME"
+
     exit $SVC_RET
     ;;
 reboot)

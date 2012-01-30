@@ -4,6 +4,11 @@ host via custom hook scripts) - done for SSH banner checks.
 TEST setting of host timezone not equal to user/OS default timezone,
 i.e. run VMs as UTC whatever the user's own preference is.
 
+TEST zfs snapshots in various combinations (dataset names and pathnames,
+set in variables for instance and service levels, mix with auto);
+currently tested only as autodetected pathnames for local and NFS-backed
+ZFS datasets (individual per-VM), for root-owned and user-owned VMs.
+
 Allow to set CPU Affinity in some manner...
 
 Change PKG paths to /opt/VirtualBox/vboxsvc (for sparse-root zones)?

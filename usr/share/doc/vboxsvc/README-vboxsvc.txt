@@ -6,12 +6,13 @@ HISTORY AND AUTHORS
   See his original posts:
   * http://adumont.serveblog.net/2009/07/21/virtualbox-smf/
   * http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
-* (C) 2010-2011 by Jim Klimov, JSC COS&HT
+* (C) 2010-2012 by Jim Klimov, JSC COS&HT
   One of the "heavily upgraded" versions of these scripts was written
   by Jim Klimov, JSC COS&HT (Center of Open Systems and High Technologies)
-  It was initially published on VirtualBox forum as a topic
-  "[Free as in beer] SMF service for VirtualBox VM's"
-  http://forums.virtualbox.org/viewtopic.php?f=11&t=33249
+  * It was initially published on VirtualBox forum as a topic
+    "[Free as in beer] SMF service for VirtualBox VM's"
+    http://forums.virtualbox.org/viewtopic.php?f=11&t=33249
+  * Currently published as http://vboxsvc.sourceforge.net/
 
 INTRODUCTION
 
@@ -77,6 +78,22 @@ Updates in release 0.14 (2011-11-23) are mostly cosmetic:
   signals are processed more quickly and service offlining happens faster.
 * Some typo fixes and indentation fixes.
 * Some implicitly hardcoded default values are now explicitly set.
+
+Updates in release 0.15 (2012-01-30):
+* "Unspecified" timezones may be not only an empty string, but also a couple
+  of double-quotes (""). Catch couples of single-quotes too, for good measure.
+  Generally caught in getproparg() routine.
+* Detect if ZFS is used for backend storage (config files, VM disk files,
+  snapshots) and try to create snapshots before starting/after stopping svc.
+  This feature is DISABLED BY DEFAULT as to not waste space on your disks.
+  It can be enabled with commands like these - for all VMs...:
+  # svccfg -s vbox setprop vm/zfssnap_flag = boolean: true
+  ...or for individual VMs: 
+  # svccfg -s VM_NAME setprop vm/zfssnap_flag = boolean: true
+  Cleaning up (removing obsolete snapshots) is the user's quest and out of
+  vboxsvc's scope. You can try adapting zfs-auto-snap service's cleanup...
+* Added command-line options to execute zfssnap, graceful/ungraceful poweroff,
+  and a timeout-override option to poweroff and reboot command-line methods.
 
 All thinkable behaviors and variables have been parametrized with SMF
 service properties (group "vm/" or system props in groups "start/",
@@ -165,7 +182,7 @@ See docs, i.e.:
 
 a) Package format, global zone:
 
-    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x -G
 
 You probably want the -G flag. It doesn't block you from manually installing
@@ -176,13 +193,13 @@ zero or one per machine (there is no definite/hardcoded limit though). YMMV.
 
 To update the package you can simply remove the old version and install
 anew, i.e.:
-    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
     # pkgrm COSvboxsvc
     # pkgadd -d /tmp/x -G
 
 A cleaner way is to use an admin file to overwrite an existing package,
 i.e. one from LiveUpgrade:
-    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x -G -a /etc/lu/zones_pkgadd_admin
 
 Also note that this package "depends" on SUNWvbox, so that should be
@@ -190,7 +207,7 @@ installed beforehand.
 
 b) Package format, local zone: like in the global zone, but without the
 "-G" flag, i.e.:
-    # gzcat COSvboxsvc-0.13.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x
 
 c) Files: copy script to "/lib/svc/method/vbox.sh" and the XML manifest
@@ -280,6 +297,7 @@ service and its instances (like the one provided with this package,
 but without good comments) can be exported from the running system,
 edited and imported back into the system.
 
+=== Interactive modification of SMF service and instance definitions
 "svccfg" interface is mostly oriented for shell-like execution (run it
 and type "help"), but many of its commands can also be used as command-line
 constructs for single-command actions.
@@ -301,7 +319,7 @@ values in this group:
     # svccfg -s VM_NAME addpg stop framework
     # svccfg -s VM_NAME setprop start/timeout_seconds = count: 120
     # svccfg -s VM_NAME setprop stop/timeout_seconds = count: 0
-NOTE: a zero timeout value denotes absence of required timeout limitation.
+NOTE: A zero timeout value denotes absence of required timeout limitation.
 In this case, the VM can stop for as long as it takes to do properly,
 unless the OS is in a critical state like shutting down, and causes
 the VM process to be killed in some other way.
@@ -310,7 +328,73 @@ NOTE: Some versions of SMF may have defined timeouts as "integer", others
 as "count". See your error logs or other services to determine which type 
 is good for your OS.
 
-For XML-file manipulation, you do something simple like this:
+NOTE: Some versions of SMF may require all relevant "start/" and "stop/"
+values to be defined at one SMF level; i.e. if you set a custom value for
+"stop/timeout_seconds" at the instance level, you must also copy other 
+values from the service level. Otherwise you might see such effects as 
+"undefined" method scripts in the SMF instance logs, i.e. messages like this
+when stopping the service instance (i.e. "svcadm disable -st VM_NAME"):
+    # tail /var/svc/log/*VM_NAME*
+    ...
+    [ Jan 17 16:30:29 Stopping because service disabled. ]
+    [ Jan 17 16:30:29 Method property 'stop/exec is not present. ]
+The SMF service would seen to become offline instantly, while in fact the
+method script is never called, the VirtualBox VM process is never stopped 
+and the VM continues working uninterrupted.
+
+If your system shows such behavior, a somewhat bulky workaround is to redefine 
+all "stop/*" ("start/*") settings at the instance level as soon as you define 
+any custom value. For example:
+
+1) Test if your VM's service instance (called svc:/site/xvm/vbox:VM_NAME) 
+has custom values for SMF "stop" framework:
+# svccfg -s VM_NAME listprop | grep stop/
+stop/timeout_seconds               count    300
+
+2) Test if stops work or fail:
+# time svcadm disable -st VM_NAME
+real    0m0.010s
+user    0m0.001s
+sys     0m0.003s
+### That was way too quickly for a proper stop!
+
+# tail /var/svc/log/*VM_NAME*
+...
+[ Jan 17 16:30:29 Stopping because service disabled. ]
+[ Jan 17 16:30:29 Method property 'stop/exec is not present. ]
+
+3) List the SMF-service-level framework parameters:
+# svccfg -s svc:/site/xvm/vbox listprop | grep stop/
+stop/type                                  astring  method
+stop/exec                                  astring  "/lib/svc/method/vbox.sh stop"
+stop/timeout_seconds                       count    220
+
+4) Redefine all missing settings for your VM (note the quoting for parameters 
+with spaces):
+# svccfg -s VM_NAME setprop stop/type = astring: method
+# svccfg -s VM_NAME setprop stop/exec = astring: '"/lib/svc/method/vbox.sh stop"'
+# svcadm refresh VM_NAME
+# svccfg -s VM_NAME listprop | grep stop/
+stop/timeout_seconds               count    300
+stop/type                          astring  method
+stop/exec                          astring  "/lib/svc/method/vbox.sh stop"
+
+5) Reenable the service instance 
+(NOTE: this might suspend and restart your VM):
+# svcadm enable VM_NAME
+# tail -f /var/svc/log/*VM_NAME*
+...
+
+In general, whenever you change (and apply/SMF-refresh) any settings, do test
+that they work on YOUR system before relying that they "should just work" :)
+
+=== Predefined modification of SMF service and instance definitions
+SMF service definitions can be genreally distributed as structured XML
+files, and an example XML definition for VirtualBox SMF services (and
+detailed comments) comes along with this package.
+
+For XML-file manipulation of existing services, you do something simple 
+like this:
     # svccfg export vbox > /tmp/vbox-svc.xml
     # vi /tmp/vbox-svc.xml
     ...
@@ -364,7 +448,7 @@ To refresh all instances after property changes, do something like:
 
 While the "vbox.sh" script implements some SMF service requirements
 (it allows usage as an SMF start/stop method, uses SMF error codes and 
-properties for config, etc.) it can also be used as a command-line script. 
+properties for config, etc.), it can also be used as a command-line script. 
 
 Usage for the current version can be viewed with the "-h" parameter:
     # /lib/svc/method/vbox.sh -h
@@ -402,12 +486,49 @@ Currently there are such command-line methods as:
 ** I confess this has failed on me more than once on some hosts (usually
    too minimized to run VNC and X11 in a stable manner), but also worked
    conveniently and quite well on many other hosts.
+** Beside inadequately installed X11, there may also be "xhost" access right
+   problems. You're encouraged to test with some programs like "xcalc" or
+   "xterm" before risking to abort your VM due to X11 under-configuration;
+   especially if your VM runs with the credentials of a different user ID!
 
 Hopefully this is all the generic info there is to say about vboxsvc
 and SMF services, and actualized details - such as property names, types
 and purpose - should be seeked in current code's/manifest's comments.
 Maybe (no promise) that will also be explicitly documented in a later
 post...
+
+
+TROUBLESHOOTING
+
+Q1) SMF service exits quickly but the VM in fact continues working, or
+    SMF service starts quickly but the VM process is not spawned
+
+A1) If you defined the "stop/*" or "start/*" values for the VM's SMF instance,
+    you may be hitting an SMF bug described above. You need to define all
+    required properties of the execution methods (see above).
+
+=====
+
+Q2) A Windows XP VM refuses to shut down gracefully with "acpipowerbutton"
+
+A2) If you use the XP VM remotely, the OS by default refuses to shut down if
+    there are active non-console sessions. See this post for details:
+    https://forums.virtualbox.org/viewtopic.php?f=2&t=24719&p=215403#p215403
+    In short, try adding the following keys to your VM registry and reboot VM:
+---
+REGEDIT4
+[HKEY_USERS\.DEFAULT\Control Panel\Desktop]
+"AutoEndTasks"="1"
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows]
+"ShutdownWarningDialogTimeout"=dword:00000001
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Error Message Instrument]
+"EnableDefaultReply"=dword:00000001
+---
+    NOTE: Windows users don't get a warning message (i.e. "Shutting down 
+    in 30 seconds): tasks were requested to end automatically, so Windows 
+    should go down quickly.
+
+=====
 
 HTH,
 //Jim Klimov

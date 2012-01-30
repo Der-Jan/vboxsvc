@@ -3,7 +3,7 @@
 <!--
    http://adumont.serveblog.net/2009/09/01/virtualbox-smf-2/
 
-   $Id: vbox-svc.xml,v 1.21 2011/11/23 03:37:37 jim Exp $
+   $Id: vbox-svc.xml,v 1.24 2012/01/30 20:55:05 jim Exp $
    This manifest is distributed under the following MIT License terms:
 
    Copyright (c) 2009 Alexandre Dumont
@@ -37,7 +37,7 @@
 <service
    name='site/xvm/vbox'
    type='service'
-   version='0.13'>
+   version='0.15'>
 
    <dependency
       name='multi-user-server'
@@ -234,8 +234,31 @@
       <propval name='kicker_vmsvccheck_failures_timeframe' type='integer' value='1200' />
 
       <!-- Set a specific different "VM hardware clock" time zone
-        for the VM process, i.e. 'UTC' or 'Europe/Moscow' -->
+        for the VM process, i.e. 'UTC' or 'Europe/Moscow'; empty value
+	means no override (use parent process's time zone) -->
       <propval name='timezone' type='astring' value='' />
+
+      <!-- Create ZFS snapshots before start / after stop ? -->
+      <propval name='zfssnap_flag' type='boolean' value='false' />
+      <!-- List ZFS datasets (fs, vol) to make snapshots of.
+	Can use fs-tree names starting with slash; mkdir will be used
+	to try creating snapshots.
+	Can equal to a "minus" ("-") character to enforce an empty value (no
+	datasets defined at this level, don't try to inherit) for instances.
+	zfssnap_dslist	Explicit list of datasets relevant to VM;
+			if 'auto', then paths will be detected from
+			VM config at run-time each time (config file,
+			snapshot save dir, HDD image dirs)
+	zfssnap_dslist_append	Explicit list of additional datasets
+			relevant to this VM (i.e. to enforce a certain ZVOL
+			snapshot along with 'auto'-detected ZPL datasets)
+      -->
+      <propval name='zfssnap_dslist' type='astring' value='auto' />
+      <propval name='zfssnap_dslist_append' type='astring' value='' />
+      <!-- Arbitrary string to prepend to snapshot names. Total format:
+	dataset@{prefix}:{vm_name}:{prestart|poststop}:{vm_state}:{timestamp}
+      -->
+      <propval name='zfssnap_prefix' type='astring' value='vboxsvc-auto-snap' />
 
    </property_group>
 
@@ -244,7 +267,18 @@
       <method_context working_directory='/var/tmp'>
          <method_credential user='root' group='root' />
       </method_context>
-   
+
+<!--
+    // If you need to override SMF method timeouts, you have to define all
+    // attributes - even if they are the same as at general service-level.
+      <exec_method
+         type='method'
+         name='stop'
+         exec='/lib/svc/method/vbox.sh stop'
+         timeout_seconds='240'
+      />
+-->
+
       <property_group  name='vm' type='application'>
         <!-- See comments and current defaults in service def, above -->
          <propval name='stop_method' type='astring' value='savestate' />
@@ -278,6 +312,11 @@
          <propval name='kicker_vmsvccheck_startdelay' type='integer' value='300' />
          <propval name='kicker_vmsvccheck_failures_maxcount' type='integer' value='3' />
          <propval name='kicker_vmsvccheck_failures_timeframe' type='integer' value='1200' />
+
+         <propval name='zfssnap_flag' type='boolean' value='true' />
+         <propval name='zfssnap_dslist' type='astring' value='auto' />
+         <propval name='zfssnap_dslist_append' type='astring' value='-' />
+         <propval name='zfssnap_prefix' type='astring' value='vboxsvc-auto-snap' />
 -->
 
 <!-- // These have sane autovalues in the script, but to somewhat hide from
