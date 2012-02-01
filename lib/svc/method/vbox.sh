@@ -10,7 +10,7 @@
 # Copyright (c) 2009 Alexandre Dumont
 # (C) 2009 minor patches by Jim Klimov: start "saved" machines
 # (C) 2010-2012 larger patches by Jim Klimov, JCS COS&HT
-#       $Id: vbox.sh,v 1.56 2012/01/30 18:30:45 jim Exp $
+#       $Id: vbox.sh,v 1.57 2012/02/01 16:05:07 jim Exp $
 #	* process aborted, paused VM's
 #	* "vm/debug_smf" flag, "vm/nice" flag.
 #       * Inherit service-level default attribute values.
@@ -72,11 +72,9 @@ PATH="\
 $PATH"
 export PATH
 
-[ x"$VBOXSVC_TIMEOUT_OVERRIDE" = x ] && VBOXSVC_TIMEOUT_OVERRIDE=-1
-
 printHelp() {
     echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2012 by Jim Klimov,"
-    echo "	$Id: vbox.sh,v 1.56 2012/01/30 18:30:45 jim Exp $"
+    echo "	$Id: vbox.sh,v 1.57 2012/02/01 16:05:07 jim Exp $"
     echo "	see http://vboxsvc.sourceforge.net/ for possible updates"
     echo "	building upon work (C) 2009 by Alexandre Dumont"
     echo "This method script supports SMF methods: { start | stop }"
@@ -730,10 +728,8 @@ addAbortedCounter() {
 	"$RESTART_ABORTED_VM_FAILURES_MAXCOUNT" -gt 0 -a \
 	"$RESTART_ABORTED_VM_FAILURES_TIMEFRAME" -gt 0 \
     ]; then
-	if [ x"$GDATE" != x -a \
-	    -x "$GDATE" \
-	]; then
-	    TS_NOW="`TZ=UTC $GDATE +%s`" || TS_NOW=0
+	if [ x"$getTimeStamp" != x ]; then
+	    TS_NOW="`eval $getTimeStamp`" || TS_NOW=0
 	else
 	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: aborted VM detected (state=$VM_STATE), but gdate is not available. Total abortion count over eternity will be used"
 	    TS_NOW=0
@@ -773,10 +769,8 @@ addVMSvcCheckCounter() {
 	"$KICKER_VMSVCCHECK_FAILURES_MAXCOUNT" -gt 0 -a \
 	"$KICKER_VMSVCCHECK_FAILURES_TIMEFRAME" -gt 0 \
     ]; then
-	if [ x"$GDATE" != x -a \
-	    -x "$GDATE" \
-	]; then
-	    TS_NOW="`TZ=UTC $GDATE +%s`" || TS_NOW=0
+	if [ x"$getTimeStamp" != x ]; then
+	    TS_NOW="`eval $getTimeStamp`" || TS_NOW=0
 	else
 	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors, but gdate is not available. Total failure count over eternity will be used"
 	    TS_NOW=0
@@ -947,8 +941,8 @@ kick() {
 		    KICKER_VMSVCCHECK_STARTDELAY="300"
 
 	        OK=yes
-		if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-		    TS_NOW="`TZ=UTC $GDATE +%s`" || TS_NOW=0
+		if [ x"$getTimeStamp" != x ]; then
+		    TS_NOW="`eval $getTimeStamp`" || TS_NOW=0
 		    if [  x"$TS_VM_STARTED" != x \
 			-a "$TS_VM_STARTED" -gt 0 \
 			-a "$TS_VM_STARTED" -le "$TS_NOW" \
@@ -997,8 +991,8 @@ kick() {
 				if reboot_vm "$INSTANCE"; then
 				    echo "KICKER-INFO: resetting error counters and startup-delay check"
 				    NEW_SVC_STATE=online
-			    	    if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-			    	        TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
+			    	    if [ x"$getTimeStamp" != x ]; then
+			    	        TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
 				    fi
 			    	    VMSVCCHECK_COUNTER=""
 			        else
@@ -1015,8 +1009,8 @@ kick() {
 			    else
 			        NEW_SVC_STATE=maintenance
 			    fi
-			    if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-			        TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
+			    if [ x"$getTimeStamp" != x ]; then
+			        TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
 			    fi
 			    ;;
 			3) ### cause SMF maintenance
@@ -1036,8 +1030,8 @@ kick() {
         	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to start..."
     		start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
 
-		if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-		    TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
+		if [ x"$getTimeStamp" != x ]; then
+		    TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
 		fi
 	    else
         	echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, too many times (max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds. Requesting maintenance mode!"
@@ -1060,8 +1054,8 @@ kick() {
         	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to unpause..."
         	resume_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
 
-	        if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-	    	    TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
+	        if [ x"$getTimeStamp" != x ]; then
+	    	    TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
 		fi
             else
         	echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
@@ -1079,8 +1073,8 @@ kick() {
             echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to start..."
             start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
 
-	    if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-		TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
+	    if [ x"$getTimeStamp" != x ]; then
+		TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
 	    fi
         else
             echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
@@ -1116,8 +1110,8 @@ kick() {
             echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got in state $VM_STATE, trying to unpause..."
             start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
 
-	    if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-		TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
+	    if [ x"$getTimeStamp" != x ]; then
+		TS_VM_STARTED="`eval $getTimeStamp`" | TS_VM_STARTED=0
 	    fi
     	else
             echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
@@ -1361,14 +1355,14 @@ testBlockFile() {
 
 	### Check if age doesn't exceed set maximum
 	KICKER_BLOCKFILE_AGE="-1"
-	if [ x"$GDATE" = x ]; then
-	    echo "ERROR: 'gdate' not available. Can't check KICKER block-file age."
+	if [ x"$getFileTimeStamp" = x ]; then
+	    echo "ERROR: getFileTimeStamp method unavailable. Can't check KICKER block-file age."
 	    echo "ERROR: Triggering SMF failure mode by setting zero block-file age."
 	    echo "ERROR: Remove block-file manually to enable VM service."
 	    echo "INFO: Consider installing gdate for better accuracy."
 	else
-	    TS_NOW="`TZ=UTC $GDATE +%s`" || TS_NOW=1
-	    TS_FILE="`TZ=UTC $GDATE -r "$KICKER_BLOCKFILE_NAME" +%s`" || TS_FILE=0
+	    TS_NOW="`eval $getTimeStamp`" || TS_NOW=1
+	    TS_FILE="`eval $getFileTimeStamp "$KICKER_BLOCKFILE_NAME"`" || TS_FILE=0
 	    KICKER_BLOCKFILE_AGE="$(($TS_NOW-$TS_FILE))" || KICKER_BLOCKFILE_AGE="0"
 	    [ "$KICKER_BLOCKFILE_AGE" -lt 0 ] && echo "INFO: block-file age is negative ($KICKER_BLOCKFILE_AGE). Clock skew?"
 	fi
@@ -1474,14 +1468,39 @@ getState() {
     return $SVC_RET
 }
 
+getFileTimeStamp_GDATE() {
+    if [ x"$GDATE" != x -a -x "$GDATE" ]; then
+	TZ=UTC $GDATE -u -r "$1" +%s
+	return
+    fi
+    echo 0
+    return 1
+}
+
+getFileTimeStamp_PERL() {
+    _OUT=$(TZ=UTC perl -e 'use File::stat;print stat("'"$1"'")->mtime . "\n";')
+    _RES=$?
+
+    if [ x"$_OUT" != x -a "$_RES" = 0 ]; then
+	echo "$_OUT"
+    else
+	echo 0
+    fi
+    return $_RES
+}
+
 ############################################################################
 ### Actual body of work
 
-[ x"$DEBUG_SMF" = x ] && DEBUG_SMF="$( GETPROPARG_QUIET=true getproparg vm/debug_smf )"
-[ $? != 0 ] && DEBUG_SMF=false
+if [ x"$DEBUG_SMF" = x ]; then
+    DEBUG_SMF="$( GETPROPARG_QUIET=true getproparg vm/debug_smf )"
+    [ $? != 0 ] && DEBUG_SMF=false
+fi
 [ x"$DEBUG_SMF" = xtrue ] && echo "INFO: Enabling SMF script debug..." && set -x
 
 GETPROPARG_QUIET=true get_run_as >/dev/null 2>/dev/null
+
+[ x"$VBOXSVC_TIMEOUT_OVERRIDE" = x ] && VBOXSVC_TIMEOUT_OVERRIDE=-1
 
 ### Check for transient/child/contract(default) mode...
 #duration=""
@@ -1491,6 +1510,8 @@ GETPROPARG_QUIET=true get_run_as >/dev/null 2>/dev/null
 
 ### Not all users may have write permissions to /var/run -
 ### so by default we use /tmp as it also clears on reboot
+### TODO: Maybe write to VM's directory (esp. NFS) in case of shared storage
+### on VM farms - to block simultaneous startup of VMs on different hosts, etc?
 KICKER_PIDFILE_NAME="$( GETPROPARG_QUIET=true getproparg vm/kicker_pidfile_name)" || \
     KICKER_PIDFILE_NAME=""
 [ x"$KICKER_PIDFILE_NAME" = x'""' -o x"$KICKER_PIDFILE_NAME" = x"''" ] && \
@@ -1515,10 +1536,26 @@ KICKER_BLOCKFILE_MAXAGE="$( GETPROPARG_QUIET=true getproparg vm/kicker_blockfile
     KICKER_BLOCKFILE_NAME="/tmp/.vboxsvc-kicker-$INSTANCE.block"
 [ x"$KICKER_BLOCKFILE_MAXAGE" = x ] && KICKER_BLOCKFILE_MAXAGE="60"
 
-GDATE_LIST="/opt/COSac/bin/gdate /opt/sfw/bin/gdate /usr/local/bin/date /usr/local/bin/gdate /usr/sfw/bin/gdate /usr/bin/gdate"
-GDATE=""
+######################################################################
+### Kinda like macro - select a method to get epoch-time in seconds
+getTimeStamp=""
+getFileTimeStamp=""
+if perl -e ';' 2>/dev/null; then
+    getTimeStamp="perl -e 'print time() . \"\n\";'" && \
+    getFileTimeStamp="getFileTimeStamp_PERL"
 
+    if [ x"$DEBUG_SMF" = xtrue ]; then
+	echo "DEBUG: Timestamp PERL: `eval $getTimeStamp`"
+        echo "DEBUG: Filestamp PERL: `eval $getFileTimeStamp "$0"`"
+    fi
+fi
+
+### GNU date binary is a bit faster than PERL; try to use it by default
+GDATE_LIST="/opt/COSac/bin/gdate /opt/sfw/bin/gdate /usr/local/bin/date /usr/local/bin/gdate /usr/sfw/bin/gdate /usr/bin/gdate /usr/gnu/bin/date /opt/gnu/bin/date"
+
+# GDATE=""
 [ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
+
 [ x"$GDATE" = x ] && for F in $GDATE_LIST; do
     if [ -x "$F" ]; then
         GDATE="$F"
@@ -1530,6 +1567,31 @@ if [ x"$GDATE" = x ]; then
     gdate && GDATE="`which gdate | head -1`"
 fi
 [ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
+
+if [ x"$GDATE" != x ]; then
+    getTimeStamp="TZ=UTC $GDATE -u +%s"
+    getFileTimeStamp="getFileTimeStamp_GDATE"
+    if [ x"$DEBUG_SMF" = xtrue ]; then
+	echo "DEBUG: Timestamp GDATE: `eval $getTimeStamp`"
+	echo "DEBUG: Filestamp GDATE: `eval $getFileTimeStamp "$0"`"
+    fi
+fi
+
+if [ x"$getTimeStamp" != x ]; then
+    if [ "`eval $getTimeStamp`" -gt 0 ]; then
+	true
+    else
+	### Invalid numbers, or negative values
+	echo "ERROR: Could not detect a proper getTimeStamp() method!" >&2
+	getTimeStamp=""
+    fi
+else
+    echo "ERROR: Could not detect a proper getTimeStamp() method!" >&2
+fi
+
+#################################################################
+### Process requested command-line actions and/or SMF methods ###
+#################################################################
 
 SVC_RET=-1
 case "$1" in
@@ -1742,7 +1804,7 @@ help|--help|-help|-h|'-?'|'/?')
 esac
 
 if [ "$SVC_RET" -ne 0 ]; then
-    echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE failed to start/stop."
+    echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE failed($SVC_RET) to do '$1'."
     exit $SMF_EXIT_ERR_FATAL
 fi
 
