@@ -95,6 +95,26 @@ Updates in release 0.15 (2012-01-30):
 * Added command-line options to execute zfssnap, graceful/ungraceful poweroff,
   and a timeout-override option to poweroff and reboot command-line methods.
 
+Updates in release 0.16 (2012-04-15):
+* Generation of timestamps (current time or file modtime) is now a function
+  that can be performed by calling either gdate or perl (slower). If neither
+  is available, an error return code is set and a zero text value is output.
+* Added command-line option to execute "dirlist" which reports all FS paths
+  which are known to be related to the VM and would be ZFS-snapshotted.
+* Timestamped infos for logging are now all in UTC (was mixed).
+* Script now exports LANG=C LC_ALL=C to ensure english text from external
+  things that it calls.
+* Added an SMF manifest for a dummy service to optionally delay the VBOX
+  service startup just after the host OS has booted.
+* The SMF start method now has an option to wait for a defined timeout or
+  until it detects that the VM began providing its services (using the
+  KICKER monitoring hooks).
+* Parse the KICKER monitoring hook parameters to "unescape" space chars.
+* If a VM instantly failed to start, don't spawn the KICKER loop but fail
+  the SMF instance instead.
+* Clarified some comments and log-reports (i.e. report the stop timeouts)
+* Try to survive 'svcadm refresh' which can seem like SMF offlining.
+
 All thinkable behaviors and variables have been parametrized with SMF
 service properties (group "vm/" or system props in groups "start/",
 "stop/", etc.), and properties not defined at the instance level
@@ -152,8 +172,9 @@ with the same credentials via SMF.
 
 I've run it only with Solaris 10 (updates 6 and 8) and OpenSolaris
 SXCE ("Nevada") snv_117 thru snv_129 (x86 and x86_64). I haven't
-tried it (or VirtualBox) with OpenSolaris Indiana (i.e. osol_b134)
-or any other distribution, so I can't guarantee how it goes there.
+tried it (or VirtualBox) with OpenSolaris Indiana (i.e. osol_b134),
+OpenIndiana/illumos, Solaris 11 or any other distribution, so
+I can't guarantee how it goes there.
 
 As far as I know, it is now "mauvais ton" to run programs (including
 shell) as a root, so all root-executed command lines should instead
@@ -182,7 +203,7 @@ See docs, i.e.:
 
 a) Package format, global zone:
 
-    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.16.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x -G
 
 You probably want the -G flag. It doesn't block you from manually installing
@@ -193,13 +214,13 @@ zero or one per machine (there is no definite/hardcoded limit though). YMMV.
 
 To update the package you can simply remove the old version and install
 anew, i.e.:
-    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.16.pkg.gz > /tmp/x
     # pkgrm COSvboxsvc
     # pkgadd -d /tmp/x -G
 
 A cleaner way is to use an admin file to overwrite an existing package,
 i.e. one from LiveUpgrade:
-    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.16.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x -G -a /etc/lu/zones_pkgadd_admin
 
 Also note that this package "depends" on SUNWvbox, so that should be
@@ -207,7 +228,7 @@ installed beforehand.
 
 b) Package format, local zone: like in the global zone, but without the
 "-G" flag, i.e.:
-    # gzcat COSvboxsvc-0.15.pkg.gz > /tmp/x
+    # gzcat COSvboxsvc-0.16.pkg.gz > /tmp/x
     # pkgadd -d /tmp/x
 
 c) Files: copy script to "/lib/svc/method/vbox.sh" and the XML manifest
@@ -219,13 +240,16 @@ repository if needed - as determined by XML file's version tag),
 but this is not a requirement if you plan to edit and import the
 file manually anyway.
 
+In local zones the "/lib" directory may be read-only. In this case you
+can place the script elsewhere (say, "/opt/VirtualBox") and modify the
+SMF manifest accordingly.
 
 3) Working with SMF service
 
 You'd best read up the original documentation. Some random pointers:
-* Sun BigAdmin: [url]http://www.sun.com/bigadmin/jsp/utils/PrintCustomPage.jsp?url=http%3A%2F%2Fwww.sun.com%2Fbigadmin%2Fcontent%2Fselfheal%2Fsdev_intro.jsp[/url]
-* Sun Wiki: [url]http://wikis.sun.com/display/BigAdmin/SMF+Short+Cuts[/url]
-* Joyent Wiki: [url]http://wiki.joyent.com/solaris:smf-manifest-recipes[/url]
+* Sun BigAdmin: http://www.sun.com/bigadmin/jsp/utils/PrintCustomPage.jsp?url=http%3A%2F%2Fwww.sun.com%2Fbigadmin%2Fcontent%2Fselfheal%2Fsdev_intro.jsp
+* Sun Wiki: http://wikis.sun.com/display/BigAdmin/SMF+Short+Cuts
+* Joyent Wiki: http://wiki.joyent.com/solaris:smf-manifest-recipes
 
 3.1) OVERVIEW OF SOLARIS SMF
 
@@ -473,6 +497,7 @@ Currently there are such command-line methods as:
   query state, and SMF instance state.
 * reboot [ifruns] - try to gracefully reboot the VM [if it's currently running]
   This will attempt methods: acpipowerbutton -> poweroff -> reset -> start
+* poweroff - try to gracefully "poweroff" the VM (acpipowerbutton -> poweroff)
 * reset - try to quickly reset the VM
 * startgui - save the VM state, and restart it with the GUI-mode VirtualBox
   (in VNC console to the headless host servers, in my case). If all goes OK,
@@ -490,6 +515,9 @@ Currently there are such command-line methods as:
    problems. You're encouraged to test with some programs like "xcalc" or
    "xterm" before risking to abort your VM due to X11 under-configuration;
    especially if your VM runs with the credentials of a different user ID!
+* zfssnap - make a snapshot of all directories that contain VM's resources
+  and are ZFS datasets.
+* dirlist - list the directroies with VM resoures and relevant SMF settings.
 
 Hopefully this is all the generic info there is to say about vboxsvc
 and SMF services, and actualized details - such as property names, types
@@ -529,6 +557,35 @@ REGEDIT4
     should go down quickly.
 
 =====
+
+Q3) My VMs running in Solaris local zones don't seem to shut down properly
+    when I halt the local zone.
+
+A3) I've recently noticed that there is another feature to keep in mind when 
+    hosting VMs in local zones: the "zoneadm -z ZONENAME halt" command
+    terminates the zone's processes quickly, without going through proper 
+    SMF shutdown procedures. For VM processes this quick termination would
+    mean an abruptly aborted VM. Likewise for "zoneadm -z ZONENAME reboot".
+    The proper way to stop or reboot a local zone gracefully is to run
+    "zlogin ZONENAME init 0" or "zlogin ZONENAME init 6" accordingly. 
+    Docs for Solaris 11 mention that they added a new action option -
+    "zoneadm -z ZONENAME shutdown (-r)" for graceful shutdowns and reboots 
+    of local zones, but this is not (yet) available in illumos/OpenIndiana.
+    The default Solaris method script for stopping all zones (as when
+    running "svcadm disable zones:default" in the global zone) tries the 
+    graceful shutdown for 3/4 of the configured stop timeout time, and then 
+    it tries the ungraceful shutdown for the remaining 1/4 of the time. 
+    Finally, if this stop method does not finish stopping the zones, the
+    SMF in the GZ would apparently kill the remaining zoneadmd processes 
+    and their children as it would on all timeout failures.
+
+    So, when hosting VMs in local zones, remember to use "zlogin...init..." 
+    to stop or reboot a zone, and expand the "zones:default" SMF timeouts 
+    to exceed the required and configured shutdown times of your VM service 
+    instances. Also remember that if many VMs need to save-to-disk, this 
+    would likely take longer in wall-clock time than your possible tests 
+    of "how long does it take this VM to suspend?" executed for single 
+    VMs at a time.
 
 HTH,
 //Jim Klimov

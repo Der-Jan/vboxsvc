@@ -10,7 +10,7 @@
 # Copyright (c) 2009 Alexandre Dumont
 # (C) 2009 minor patches by Jim Klimov: start "saved" machines
 # (C) 2010-2012 larger patches by Jim Klimov, JCS COS&HT
-#       $Id: vbox.sh,v 1.57 2012/02/01 16:05:07 jim Exp $
+#       $Id: vbox.sh,v 1.62 2012/04/15 02:02:41 jim Exp $
 #	* process aborted, paused VM's
 #	* "vm/debug_smf" flag, "vm/nice" flag.
 #       * Inherit service-level default attribute values.
@@ -38,7 +38,8 @@
 #	  The feature is OFF BY DEFAULT because it can consume space without
 #	  control and it "is possible" that backends are not ZFS-based.
 #	  Removing the old snapshots is the user's task (adapt zfs-auto-snap?)
-#    NOTE: Some features require GNU date (gdate) in PATH, see $GDATE below.
+#    NOTE: Some features require GNU date (gdate) or perl in PATH, see $GDATE
+#    and timestamping-method detector below.
 #
 #
 # Permission is hereby granted, free of charge, to any person
@@ -72,9 +73,15 @@ PATH="\
 $PATH"
 export PATH
 
+# Ensure programs return english text in case we want to parse and interpret
+LANG=C
+LC_ALL=C
+export LANG
+export LC_ALL
+
 printHelp() {
     echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2012 by Jim Klimov,"
-    echo "	$Id: vbox.sh,v 1.57 2012/02/01 16:05:07 jim Exp $"
+    echo '	$Id: vbox.sh,v 1.62 2012/04/15 02:02:41 jim Exp $'
     echo "	see http://vboxsvc.sourceforge.net/ for possible updates"
     echo "	building upon work (C) 2009 by Alexandre Dumont"
     echo "This method script supports SMF methods: { start | stop }"
@@ -109,6 +116,8 @@ printHelp() {
     echo ""
     echo "	zfssnap			Snapshots VM-related ZFS datasets according"
     echo "				to SMF config (forces zfssnap_flag=true)"
+    echo "	dirlist			Lists VM-related FS objects (including those"
+    echo "				found automatically and implied by SMF config)"
     echo ""
     echo "	poweroff		Powers off the VM by trying"
     echo "				acpipowerbutton -> poweroff"
@@ -141,9 +150,9 @@ sleeper() {
 
     COUNT=0
     while [ "$COUNT" -lt "$MAX" ]; do
-        sleep 1
-        COUNT="`expr $COUNT + 1`"
-    done               
+	sleep 1
+	COUNT="`expr $COUNT + 1`"
+    done
 }
 #############################################################################
 
@@ -194,14 +203,14 @@ fi
 
 if [ -z "$SMF_FMRI" ]; then
     case "$1" in
-        help|--help|-help|-h|'-?'|'/?')
-            printHelp
-            echo "NOTE: SMF framework variables are not initialized. Valid SMF_FMRI value is required, i.e.:"
+	help|--help|-help|-h|'-?'|'/?')
+	    printHelp
+	    echo "NOTE: SMF framework variables are not initialized. Valid SMF_FMRI value is required, i.e.:"
 	    svcs -a | grep 'svc:/site/xvm/vbox'
-            exit 0
+	    exit 0
 	    ;;
-        *)
-            echo "ERROR: SMF framework variables are not initialized." >&2
+	*)
+	    echo "ERROR: SMF framework variables are not initialized." >&2
 	    exit $SMF_EXIT_ERR
 	    ;;
     esac
@@ -232,6 +241,7 @@ unset _SMF_FMRI
 SMF_BASE="`echo "$SMF_FMRI" | sed 's/^\(.*\:.*\)\(\:.*\)$/\1/'`"
 INSTANCE="$( echo $SMF_FMRI | cut -d: -f3 )"
 
+##############################################################################
 ### If current user differs from 'method_context/user', try using 'su'
 ### Processed below. Use-case: root checking non-root's VM status.
 RUNAS=""
@@ -250,16 +260,16 @@ GETPROPARG_QUIET=false
 GETPROPARG_INHERIT=true
 getproparg() {
     if [ x"$GETPROPARG_QUIET" = x"true" ]; then
-        val="`$RUNAS svcprop -p "$1" "$SMF_FMRI" 2>/dev/null`"
+	val="`$RUNAS svcprop -p "$1" "$SMF_FMRI" 2>/dev/null`"
     else
-        val="`$RUNAS svcprop -p "$1" "$SMF_FMRI"`"
+	val="`$RUNAS svcprop -p "$1" "$SMF_FMRI"`"
     fi
 
     if [ x"$val" = x"''" -o x"$val" = x'""' ]; then
-        [ x"$GETPROPARG_QUIET" = x"true" ] || echo "INFO: Using instance-level attribute '$1' set to empty ($var)" >&2
-        val=""
-        echo ""
-        return
+	[ x"$GETPROPARG_QUIET" = x"true" ] || echo "INFO: Using instance-level attribute '$1' set to empty ($var)" >&2
+	val=""
+	echo ""
+	return
     fi
 
     [ -n "$val" ] && echo "$val" && return
@@ -272,22 +282,22 @@ getproparg() {
     ### Value not defined/set for instance
     ### Fetch one set for SMF service defaults
     if [ x"$GETPROPARG_QUIET" = x"true" ]; then
-        val="`$RUNAS svcprop -p "$1" "$SMF_BASE" 2>/dev/null`"
+	val="`$RUNAS svcprop -p "$1" "$SMF_BASE" 2>/dev/null`"
     else
-        val="`$RUNAS svcprop -p "$1" "$SMF_BASE"`"
+	val="`$RUNAS svcprop -p "$1" "$SMF_BASE"`"
     fi
 
     if [ -n "$val" ]; then
-        [ x"$GETPROPARG_QUIET" != x"true" ] && \
+	[ x"$GETPROPARG_QUIET" != x"true" ] && \
 	    echo "INFO: Using service-general default attribute '$1' = '$val'" >&2
 
-        if [ x"$val" = x"''" -o x"$val" = x'""' ]; then
+	if [ x"$val" = x"''" -o x"$val" = x'""' ]; then
 	    [ x"$GETPROPARG_QUIET" = x"true" ] || echo "INFO: Using service-general attribute '$1' set to empty ($var)" >&2
-    	    val=""
+	    val=""
 	fi
 
-        echo "$val"
-        return
+	echo "$val"
+	return
     fi
     false
 }
@@ -299,14 +309,14 @@ get_nicerun() {
     NICERUN=""
 
     if [ x"$NICE" != x ]; then
-        if [ "$NICE" -le 0 -o "$NICE" -ge 0 ]; then
-            ### Is a number
-            NICERUN="/bin/nice -n $NICE"
-        else
-            echo "WARN: invalid 'vm/nice' = '$NICE', ignored." >&2
-        fi
+	if [ "$NICE" -le 0 -o "$NICE" -ge 0 ]; then
+	    ### Is a number
+	    NICERUN="/bin/nice -n $NICE"
+	else
+	    echo "WARN: invalid 'vm/nice' = '$NICE', ignored." >&2
+	fi
     else
-        echo "WARN: 'vm/nice' not set, using OS defaults." >&2
+	echo "WARN: 'vm/nice' not set, using OS defaults." >&2
     fi
 
     echo "$NICERUN"
@@ -351,10 +361,10 @@ start_vm() {
       [ x"$TZVM" != x ] && export $TZVM
 
       if [ x"$NICERUN" = x -o x"$NICE" = x -o x"$NICE" = x0 ]; then
-        echo "INFO: Normal RUN:	VBoxManage..." >&2
-        $RUNAS /usr/bin/VBoxManage startvm "$1" --type vrdp
+	echo "INFO: Normal RUN:	VBoxManage..." >&2
+	$RUNAS /usr/bin/VBoxManage startvm "$1" --type vrdp
       else
-        echo "INFO: NICERUN:	$NICERUN VBoxHeadless..." >&2
+	echo "INFO: NICERUN:	$NICERUN VBoxHeadless..." >&2
 	$RUNAS $NICERUN /usr/bin/VBoxHeadless -startvm "$1" --vrdp config &
       fi
     )
@@ -365,15 +375,15 @@ stop_vm() {
     if [ x"$FORCE_STOP_METHOD" != x ]; then
 	STOP_METHOD="$FORCE_STOP_METHOD"
     else
-        STOP_METHOD="$( getproparg vm/stop_method )"
+	STOP_METHOD="$( getproparg vm/stop_method )"
     fi
 
     case "$STOP_METHOD" in
-        acpipowerbutton|savestate|acpisleepbutton|poweroff|reset)
-            ;;
-        *)
-            STOP_METHOD="savestate"
-            ;;
+	acpipowerbutton|savestate|acpisleepbutton|poweroff|reset)
+	    ;;
+	*)
+	    STOP_METHOD="savestate"
+	    ;;
     esac
 
     ( TZVM="`get_tz_vm`"    
@@ -389,10 +399,13 @@ stop_vm() {
     [ x"$RES" = x0 ] && case "$STOP_METHOD" in
 	savestate)
 	    STOP_TIMEOUT="`( getproparg vm/stop_timeout )`" || STOP_TIMEOUT="-1"
+	    STOP_METHOD_TIMEOUT="$( GETPROPARG_QUIET=true getproparg stop/timeout_seconds)" || \
+		STOP_METHOD_TIMEOUT="UNDEF"
+
 	    [ x"$STOP_TIMEOUT" = x ] && STOP_TIMEOUT="-1"
 	    [ "$STOP_TIMEOUT" -le 0 ] && \
-		echo "INFO: Method script will not enforce a stop timeout. SMF may..." || \
-		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion..."
+		echo "INFO: Method script will not enforce a stop timeout (vm/stop_timeout undefined). SMF may (stop/timeout_seconds=$STOP_METHOD_TIMEOUT)..." || \
+		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion (stop/timeout_seconds=$STOP_METHOD_TIMEOUT)..."
 	    STOP_COUNT=0
 
 	    VM_STATE="$( vm_state $1 )"
@@ -402,9 +415,9 @@ stop_vm() {
 
 		VM_STATE="$( vm_state $1 )"
 		case "x$VM_STATE" in
-	    	    xaborted|xpoweroff)
+		    xaborted|xpoweroff)
 			echo "ERROR: VM '$1' died during savestate!" >&2
-		        VM_STATE="saved"
+			VM_STATE="saved"
 			RES=126
 			;;
 		esac
@@ -417,16 +430,18 @@ stop_vm() {
 		fi
 	    done
 	    ;;
-        poweroff|acpipowerbutton)
+	poweroff|acpipowerbutton)
 	    if [ "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
 		STOP_TIMEOUT="$VBOXSVC_TIMEOUT_OVERRIDE"
 	    else
 		STOP_TIMEOUT="`( getproparg vm/stop_timeout )`" || STOP_TIMEOUT="-1"
 	        [ x"$STOP_TIMEOUT" = x ] && STOP_TIMEOUT="-1"
 	    fi
+	    STOP_METHOD_TIMEOUT="$( GETPROPARG_QUIET=true getproparg stop/timeout_seconds)" || \
+		STOP_METHOD_TIMEOUT="NA"
 	    [ "$STOP_TIMEOUT" -le 0 ] && \
-		echo "INFO: Method script will not enforce a stop timeout. SMF may..." || \
-		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion..."
+		echo "INFO: Method script will not enforce a stop timeout (vm/stop_timeout undefined). SMF may (stop/timeout_seconds=$STOP_METHOD_TIMEOUT)..." || \
+		echo "INFO: Method script will enforce a stop timeout of $STOP_TIMEOUT, SMF may have another opinion (stop/timeout_seconds=$STOP_METHOD_TIMEOUT)..."
 	    STOP_COUNT=0
 
 	    VM_STATE="$( vm_state $1 )"
@@ -436,9 +451,9 @@ stop_vm() {
 
 		VM_STATE="$( vm_state $1 )"
 		case "x$VM_STATE" in
-	    	    xaborted|xsaved)
+			xaborted|xsaved)
 			echo "ERROR: VM '$1' died during poweroff!" >&2
-		        VM_STATE="poweroff"
+			VM_STATE="poweroff"
 			RES=126
 			;;
 		esac
@@ -477,34 +492,34 @@ reboot_vm() {
 
     case "x$INITIAL_VM_STATE" in
     xrunning|xstarting|xrestoring|xpaused)
-	echo "INFO: `date`: Beginning to reboot VM '$1' (currently '$INITIAL_VM_STATE')..."
+	echo "INFO: `LANG=C TZ=UTC date`: Beginning to reboot VM '$1' (currently '$INITIAL_VM_STATE')..."
 	if [ "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
 	    echo "INFO: Using timeout override value: '$VBOXSVC_TIMEOUT_OVERRIDE'"
 	else
-	    echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely!"
+	    echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely (see timeouts below)!"
 	fi
 
 	_FORCE_STOP_METHOD=acpipowerbutton
-	echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
-        FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
+	echo "INFO: `LANG=C TZ=UTC date`: Trying $_FORCE_STOP_METHOD..."
+	FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 	RES=$?
 
 	if [ $RES != 0 ]; then
-	    echo "INFO: `date`: That failed ($RES)"
+	    echo "INFO: `LANG=C TZ=UTC date`: That failed ($RES)"
 	    _FORCE_STOP_METHOD=poweroff
-	    echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+	    echo "INFO: `LANG=C TZ=UTC date`: Trying $_FORCE_STOP_METHOD..."
 	    FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 	    RES=$?
 
 	    if [ $RES != 0 ]; then
-                echo "INFO: `date`: That failed ($RES)"
+		echo "INFO: `LANG=C TZ=UTC date`: That failed ($RES)"
 		_FORCE_STOP_METHOD=reset
-	        echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
-    		FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
+		echo "INFO: `LANG=C TZ=UTC date`: Trying $_FORCE_STOP_METHOD..."
+		FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 		RES=$?
 	    fi
 	fi
-	echo "INFO: `date`: Done stopping (result=$RES)"
+	echo "INFO: `LANG=C TZ=UTC date`: Done stopping (result=$RES)"
 
 	zfssnap "$1" "reboot-poststop-$_FORCE_STOP_METHOD-$RES" || \
 	    sleeper 5
@@ -515,18 +530,18 @@ reboot_vm() {
     if [ x"$2" = x"ifruns" ]; then
 	case "x$INITIAL_VM_STATE" in
 	xrunning|xstarting|xrestoring|xpaused)
-	    echo "INFO: `date`: Starting VM '$1' because it was '$INITIAL_VM_STATE'..."
+	    echo "INFO: `LANG=C TZ=UTC date`: Starting VM '$1' because it was '$INITIAL_VM_STATE'..."
 	    start_vm "$1"
 	    RET=$?
 	    ;;
-	x*) echo "INFO: `date`: VM '$1' was not running ($INITIAL_VM_STATE), not starting!" ;;
+	x*) echo "INFO: `LANG=C TZ=UTC date`: VM '$1' was not running ($INITIAL_VM_STATE), not starting!" ;;
 	esac
     else
-	echo "INFO: `date`: Starting VM '$1'..."
+	echo "INFO: `LANG=C TZ=UTC date`: Starting VM '$1'..."
 	start_vm "$1"
 	RET=$?
     fi
-    echo "INFO: `date`: Done starting (result=$RET)"
+    echo "INFO: `LANG=C TZ=UTC date`: Done starting (result=$RET)"
 
     return $RET
 }
@@ -540,31 +555,31 @@ poweroff_vm() {
 
     case "x$INITIAL_VM_STATE" in
     xrunning|xstarting|xrestoring|xpaused)
-	echo "INFO: `date`: Beginning to poweroff VM '$1' (currently '$INITIAL_VM_STATE')..."
+	echo "INFO: `LANG=C TZ=UTC date`: Beginning to poweroff VM '$1' (currently '$INITIAL_VM_STATE')..."
 	if [ "$VBOXSVC_TIMEOUT_OVERRIDE" -gt 0 ]; then
 	    echo "INFO: Using timeout override value: '$VBOXSVC_TIMEOUT_OVERRIDE'"
 	else
-	    echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely!"
+	    echo "INFO: If 'vm/stop_timeout' is not set, this process will hang indefinitely (see timeouts below)!"
 	fi
 
 	_FORCE_STOP_METHOD=acpipowerbutton
-	echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
-        FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
+	echo "INFO: `LANG=C TZ=UTC date`: Trying $_FORCE_STOP_METHOD..."
+	FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 	RES=$?
 
 	if [ $RES != 0 ]; then
-	    echo "INFO: `date`: That failed ($RES)"
+	    echo "INFO: `LANG=C TZ=UTC date`: That failed ($RES)"
 	    _FORCE_STOP_METHOD=poweroff
-	    echo "INFO: `date`: Trying $_FORCE_STOP_METHOD..."
+	    echo "INFO: `LANG=C TZ=UTC date`: Trying $_FORCE_STOP_METHOD..."
 	    FORCE_STOP_METHOD=$_FORCE_STOP_METHOD stop_vm "$1"
 	    RES=$?
 
 	    if [ $RES != 0 ]; then
-                echo "INFO: `date`: That failed ($RES)"
+		echo "INFO: `LANG=C TZ=UTC date`: That failed ($RES)"
 		### TODO: Kill?
 	    fi
 	fi
-	echo "INFO: `date`: Done stopping (result=$RES)"
+	echo "INFO: `LANG=C TZ=UTC date`: Done stopping (result=$RES)"
 
 	zfssnap "$1" "poweroff-poststop-$_FORCE_STOP_METHOD-$RES" || \
 	    sleeper 5
@@ -576,11 +591,11 @@ poweroff_vm() {
 vm_state() {
     ### Get current state of VM "$1"
     $RUNAS /usr/bin/VBoxManage showvminfo "$1" --details --machinereadable | \
-        grep VMState\= | tr -s '"' ' ' | cut -d " " -f2
+	grep VMState\= | tr -s '"' ' ' | cut -d " " -f2
 
     if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to get VMState for VM $1" >&2
-        exit $SMF_EXIT_ERR_FATAL
+	echo "ERROR: Failed to get VMState for VM $1" >&2
+	exit $SMF_EXIT_ERR_FATAL
     fi
 }
 
@@ -602,7 +617,7 @@ zfssnap() {
 	-o x"$ZFSSNAP_FLAG_OVERRIDE" = xfalse ]; then
 	ZFSSNAP_FLAG="$ZFSSNAP_FLAG_OVERRIDE"
     else
-        ZFSSNAP_FLAG="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg vm/zfssnap_flag )" || \
+	ZFSSNAP_FLAG="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg vm/zfssnap_flag )" || \
 	    ZFSSNAP_FLAG=false
     fi
 
@@ -619,7 +634,7 @@ zfssnap() {
 	ZFSSNAP_PREFIX=""
     [ x"$ZFSSNAP_PREFIX" = x ] && ZFSSNAP_PREFIX="vboxsvc-auto-snap"
 
-    SNAPTAG="$ZFSSNAP_PREFIX:$1:$2:$VM_STATE:`TZ=UTC date "+%Y-%m-%dz%H:%M"`"
+    SNAPTAG="$ZFSSNAP_PREFIX:$1:$2:$VM_STATE:`TZ=UTC date -u "+%Y-%m-%dz%H:%M"`"
 
     ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg zfssnap_dslist )" || \
 	ZFSSNAP_DSLIST="auto"
@@ -629,16 +644,16 @@ zfssnap() {
     if [ x"$ZFSSNAP_DSLIST" = xauto ]; then
 	ZFSSNAP_DSLIST=""
 
-        ### TODO: Not certain about SCSI grepping, needs testing
+	### TODO: Not certain about SCSI grepping, needs testing
 	echo "INFO: Trying to detect VM-related ZFS datasets..."
 	VM_FILES="$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
 		--details --machinereadable | \
-    	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*)="/' | \
+	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*)="/' | \
 	    cut -d '"' -f2 )"
 
-        if [ $? -ne 0 ]; then
+	if [ $? -ne 0 ]; then
 	    echo "ERROR: Failed to get list of component files for VM $1" >&2
-    	    exit $SMF_EXIT_ERR_FATAL
+	    exit $SMF_EXIT_ERR_FATAL
 	fi
 
 	### Solaris 'df' allows to pass it filenames and see their FS mounts
@@ -677,8 +692,8 @@ zfssnap() {
 
 	    if [ x"$SNAP" = xyes -a ! -d "$DS/.zfs/snapshot" ]; then
 		echo "ERROR: '$DS' is not a ZFS mountpoint, skipping..."
-                SNAP=no
-            fi
+		SNAP=no
+	    fi
 
 	    if [ x"$SNAP" = xyes ]; then
 		if [ x"$RUNAS" != x ]; then
@@ -691,8 +706,8 @@ zfssnap() {
 
 	    if [ x"$SNAP" = xyes ]; then
 		echo "ERROR: failed to make a snapshot dir '$DS/.zfs/snapshot/$SNAPTAG'!" >&2
-            else
-                echo "INFO: created snapshot '$DS/.zfs/snapshot/$SNAPTAG'"
+	    else
+		echo "INFO: created snapshot '$DS/.zfs/snapshot/$SNAPTAG'"
 	    fi
 	    ;;
 	*)  ### Assume it is a ZFS dataset name
@@ -716,6 +731,67 @@ zfssnap() {
     return 0
 }
 
+dirlist() {
+    ### List FS objects related to the VM - those grepped from VM info like
+    ### zfssnap-auto, and those explicitly (optionally) listed in SMF setup.
+
+    echo "Listing FS objects related to VM '$1':"
+
+    ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true getproparg zfssnap_dslist )" || \
+	ZFSSNAP_DSLIST="auto"
+    ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true getproparg zfssnap_dslist_append )" || \
+	ZFSSNAP_DSLIST_APPEND=""
+
+    VM_FILES="$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
+		--details --machinereadable | \
+	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*)="/' | \
+	    cut -d '"' -f2 )"
+
+    ### Solaris 'df' allows to pass it filenames and see their FS mounts
+    ZFSSNAP_DSLIST_AUTO=""
+    if [ x"$VM_FILES" != x ]; then
+	ZFSSNAP_DSLIST_AUTO="`/bin/df -k $VM_FILES | awk '{print $NF}' | \
+		grep '/' | sort | uniq | while read D; do \
+		[ -d "$D/.zfs/snapshot" ] && echo "$D"; done`"
+    fi
+
+    case "$ZFSSNAP_DSLIST" in
+	-|"")	echo "SMF: vm/zfssnap_dslist = '$ZFSSNAP_DSLIST'"
+		echo "	Explicitly disabled" ;;
+	auto)	echo "SMF: vm/zfssnap_dslist = '$ZFSSNAP_DSLIST'"
+		echo "	Use autodetected list (below)" ;;
+	*)	echo "SMF: vm/zfssnap_dslist ="
+		for D in $ZFSSNAP_DSLIST; do
+		    echo "	$D"
+		done ;;
+    esac
+
+    case "$ZFSSNAP_DSLIST_APPEND" in
+	-|"")	echo "SMF: vm/zfssnap_dslist_append = '$ZFSSNAP_DSLIST_APPEND'"
+		echo "	Explicitly disabled" ;;
+	*)	echo "SMF: vm/zfssnap_dslist_append ="
+		for D in $ZFSSNAP_DSLIST_APPEND; do
+		    echo "	$D"
+		done ;;
+    esac
+
+    case "$ZFSSNAP_DSLIST_AUTO" in
+	"")	echo "AUTODETECT: No ZFS-backed VM datafiles were detected" ;;
+	*)	echo "AUTODETECT: Following ZFS dataset(s) were detected backing VM datafiles:"
+		for D in $ZFSSNAP_DSLIST_AUTO; do
+		    echo "	$D"
+		done ;;
+    esac
+
+    case "$VM_FILES" in
+	"")	echo "AUTODETECT: Could not detect any VM datafiles at all!" ;;
+	*)	echo "AUTODETECT: Following VM datafile paths were inspected:"
+		for D in $VM_FILES; do
+		    echo "	$D"
+		done ;;
+    esac
+}
+
 ABORT_COUNTER=""
 addAbortedCounter() {
     RESTART_ABORTED_VM_FAILURES_MAXCOUNT="$( getproparg vm/restart_aborted_vm_failures_maxcount )" || \
@@ -728,19 +804,15 @@ addAbortedCounter() {
 	"$RESTART_ABORTED_VM_FAILURES_MAXCOUNT" -gt 0 -a \
 	"$RESTART_ABORTED_VM_FAILURES_TIMEFRAME" -gt 0 \
     ]; then
-	if [ x"$getTimeStamp" != x ]; then
-	    TS_NOW="`eval $getTimeStamp`" || TS_NOW=0
-	else
-	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: aborted VM detected (state=$VM_STATE), but gdate is not available. Total abortion count over eternity will be used"
-	    TS_NOW=0
-	fi
+	TS_NOW="`getTimeStamp`" || \
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: aborted VM detected (state=$VM_STATE), but timestamping is not available. Total abortion count over eternity will be used."
 	TS_CUTOFF="$(($TS_NOW-$RESTART_ABORTED_VM_FAILURES_TIMEFRAME))"
 
 	### Chop off old entries, add the new one
 	ABORT_COUNTER="$( for TS in $ABORT_COUNTER; do [ "$TS" -ge "$TS_CUTOFF" ] && echo "$TS"; done; echo "$TS_NOW" )"
 	NUM="`echo "$ABORT_COUNTER" | wc -l`"
 	if [ "$NUM" -gt "$RESTART_ABORTED_VM_FAILURES_MAXCOUNT" ]; then
-            echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, too many times (num = $NUM, max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds. Requesting maintenance mode! Last abortion counts:"
+	    echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, too many times (num = $NUM, max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds. Requesting maintenance mode! Last abortion counts:"
 	    echo "---"
 	    echo "$ABORT_COUNTER"
 	    echo "---"
@@ -749,10 +821,10 @@ addAbortedCounter() {
 	    return 1
 	fi
 	if [ "$NUM" -gt "1" ]; then
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE $NUM times (max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds..."
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE $NUM times (max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds..."
 	fi
     else
-	echo "KICKER-INFO: `LANG=C TZ=UTC date`: aborted VM detected (state=$VM_STATE), but counter-over-timeframe is not configured or gdate is not available. Skipping abort-count checks."
+	echo "KICKER-INFO: `LANG=C TZ=UTC date`: aborted VM detected (state=$VM_STATE), but counter-over-timeframe is not configured or timestamping is not available. Skipping abort-count checks."
     fi
     return 0
 }
@@ -769,19 +841,15 @@ addVMSvcCheckCounter() {
 	"$KICKER_VMSVCCHECK_FAILURES_MAXCOUNT" -gt 0 -a \
 	"$KICKER_VMSVCCHECK_FAILURES_TIMEFRAME" -gt 0 \
     ]; then
-	if [ x"$getTimeStamp" != x ]; then
-	    TS_NOW="`eval $getTimeStamp`" || TS_NOW=0
-	else
-	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors, but gdate is not available. Total failure count over eternity will be used"
-	    TS_NOW=0
-	fi
+	TS_NOW="`getTimeStamp`" || \
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors, but timestamping is not available. Total failure count over eternity will be used."
 	TS_CUTOFF="$(($TS_NOW-$KICKER_VMSVCCHECK_FAILURES_TIMEFRAME))"
 
 	### Chop off old entries, add the new one
 	VMSVCCHECK_COUNTER="$( for TS in $VMSVCCHECK_COUNTER; do [ "$TS" -ge "$TS_CUTOFF" ] && echo "$TS"; done; echo "$TS_NOW" )"
 	NUM="`echo "$VMSVCCHECK_COUNTER" | wc -l`"
 	if [ "$NUM" -gt "$KICKER_VMSVCCHECK_FAILURES_MAXCOUNT" ]; then
-            echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors too many times (num = $NUM, max = $KICKER_VMSVCCHECK_FAILURES_MAXCOUNT) over the past $KICKER_VMSVCCHECK_FAILURES_TIMEFRAME seconds. Requesting maintenance mode! Last failure counts:"
+	    echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors too many times (num = $NUM, max tolerated = $KICKER_VMSVCCHECK_FAILURES_MAXCOUNT) over the past $KICKER_VMSVCCHECK_FAILURES_TIMEFRAME seconds. Requesting maintenance mode! Last failure counts:"
 	    echo "---"
 	    echo "$VMSVCCHECK_COUNTER"
 	    echo "---"
@@ -790,10 +858,10 @@ addVMSvcCheckCounter() {
 	    return 1
 	fi
 	if [ "$NUM" -gt "1" ]; then
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors $NUM times (max = $KICKER_VMSVCCHECK_FAILURES_MAXCOUNT) over the past $KICKER_VMSVCCHECK_FAILURES_TIMEFRAME seconds..."
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors $NUM times (max = $KICKER_VMSVCCHECK_FAILURES_MAXCOUNT) over the past $KICKER_VMSVCCHECK_FAILURES_TIMEFRAME seconds..."
 	fi
     else
-	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors, but counter-over-timeframe is not configured or gdate is not available. Skipping failure-count checks."
+	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check method reported errors, but counter-over-timeframe is not configured or timestamping is not available. Skipping failure-count checks."
     fi
     return 0
 }
@@ -807,15 +875,23 @@ kick() {
     ### on continuously monitoring the VM state
 
     ### Check service state in order to quickly abort on failure/shutdown
-    SVC_STATE=$( svcs -H -o state $SMF_FMRI )
+    SVC_STATE="$( svcs -H -o state $SMF_FMRI )"
 
     case x"$SVC_STATE" in
-        xonline|'xoffline*')
-            ;;
-        x*) ### For other states - abort kicker
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE', breaking the kicker loop" >&2
-            return 1
-            ;;
+	xonline|'xoffline*')
+	    ;;
+	'xonline*') ### maybe svcadm refresh at bad timing
+	    sleep 3
+	    SVC_STATE="$( svcs -H -o state $SMF_FMRI )"
+	    if [ x"$SVC_STATE" = 'xonline*' ]; then
+		echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE' for 3 sec, breaking the kicker loop" >&2
+		return 1
+	    fi
+	    ;;
+	x*) ### For other states - abort kicker
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE', breaking the kicker loop" >&2
+	    return 1
+	    ;;
     esac
 
     ### Log progress...
@@ -832,24 +908,24 @@ kick() {
 	### TODO: Perhaps keep track of OS time to account for however long
 	### it took to complete a previous KICKER loop (i.e. monitoring hook
 	### execution time might ge deductible)?
-        [ x"$KICKER_DEBUG" = xtrue ] && echo "KICKER-INFO: Sleeping $KICKER_FREQ"
-        sleeper "$KICKER_FREQ"
+	[ x"$KICKER_DEBUG" = xtrue ] && echo "KICKER-INFO: Sleeping $KICKER_FREQ"
+	sleeper "$KICKER_FREQ"
     fi
 
     ### Update state info
-    SVC_STATE=$( svcs -H -o state $SMF_FMRI )
+    SVC_STATE="$( svcs -H -o state $SMF_FMRI )"
     NEW_SVC_STATE="$SVC_STATE"
     case x"$SVC_STATE" in
-        xonline) ;;
-        'xoffline*')
-            ### 'offline*' = a start method is still at work; don't interfere
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE', skipping this cycle" >&2
-            return 0;;
-        x*) ### For other states - abort kicker
-    	    ### 'online*' = a stop method is at work; don't interfere
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE', breaking the kicker loop" >&2
-            return 1
-            ;;
+	xonline) ;;
+	'xoffline*')
+	    ### 'offline*' = a start method is still at work; don't interfere
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE', skipping this cycle" >&2
+	    return 0;;
+	x*) ### For other states - abort kicker
+	    ### 'online*' = a stop method is at work; don't interfere
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: service $SMF_FMRI is '$SVC_STATE', breaking the kicker loop" >&2
+	    return 1
+	    ;;
     esac
 
     KICKER_NOKICK_FILE_NAME="$( GETPROPARG_QUIET=true getproparg vm/kicker_nokick_file_name)" || \
@@ -879,37 +955,37 @@ kick() {
     KICKER_RESTART="$( GETPROPARG_QUIET=true getproparg vm/kicker_restart )" || \
 	KICKER_RESTART=""
     case x"$KICKER_RESTART" in
-        x[Nn][Oo][Nn][Ee]|x[Nn][Oo]|x[Oo][Ff][Ff]|x[Ff][Aa][Ll][Ss][Ee])
+	x[Nn][Oo][Nn][Ee]|x[Nn][Oo]|x[Oo][Ff][Ff]|x[Ff][Aa][Ll][Ss][Ee])
 	    RESTART_ABORTED_VM=false
 	    RESTART_PAUSED_VM=false
 	    RESTART_HALTED_VM=false
 	    RESTART_SAVED_VM=false
 	    IGNORE_PAUSED_VM=true
 	    ;;
-        x[Aa][Ll][Ll]|x[Oo][Nn]|x[Tt][Rr][Uu][Ee])
+	x[Aa][Ll][Ll]|x[Oo][Nn]|x[Tt][Rr][Uu][Ee])
 	    RESTART_ABORTED_VM=true
 	    RESTART_PAUSED_VM=true
 	    RESTART_HALTED_VM=true
 	    RESTART_SAVED_VM=true
 	    IGNORE_PAUSED_VM=true
 	    ;;
-        *)
+	*)
 	    ### By default of the script all restarters are false
 	    ### NOTE: may be different in XML manifest of the SMF service
-            RESTART_ABORTED_VM="$( GETPROPARG_INHERIT=false getproparg vm/restart_aborted_vm )" || \
+	    RESTART_ABORTED_VM="$( GETPROPARG_INHERIT=false getproparg vm/restart_aborted_vm )" || \
 	    RESTART_ABORTED_VM="$( GETPROPARG_INHERIT=false getproparg vm/start_aborted_vm )" || \
-            RESTART_ABORTED_VM="$( getproparg vm/restart_aborted_vm )" || \
+	    RESTART_ABORTED_VM="$( getproparg vm/restart_aborted_vm )" || \
 	    RESTART_ABORTED_VM="$( getproparg vm/start_aborted_vm )" || \
 	    RESTART_ABORTED_VM=false
 
-            RESTART_PAUSED_VM="$( getproparg vm/restart_paused_vm )" || \
+	    RESTART_PAUSED_VM="$( getproparg vm/restart_paused_vm )" || \
 	    RESTART_PAUSED_VM="$( getproparg vm/start_paused_vm )" || \
 	    RESTART_PAUSED_VM=false
 
-            RESTART_HALTED_VM="$( getproparg vm/restart_halted_vm )" || \
+	    RESTART_HALTED_VM="$( getproparg vm/restart_halted_vm )" || \
 	    RESTART_HALTED_VM=false
 
-            RESTART_SAVED_VM="$( getproparg vm/restart_saved_vm )" || \
+	    RESTART_SAVED_VM="$( getproparg vm/restart_saved_vm )" || \
 	    RESTART_SAVED_VM=false
 
 	    IGNORE_PAUSED_VM="$( getproparg vm/ignore_paused_vm )" || \
@@ -927,36 +1003,36 @@ kick() {
 
     case "x$VM_STATE" in
     xrunning|xstarting|xrestoring)
-        [ x"$KICKER_DEBUG" = xtrue ] && \
+	[ x"$KICKER_DEBUG" = xtrue ] && \
 	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is already in state $VM_STATE."
-        NEW_SVC_STATE="online"
+	NEW_SVC_STATE="online"
 
-        KICKER_VMSVCCHECK_ENABLED="$( getproparg vm/kicker_vmsvccheck_enabled)" || \
+	KICKER_VMSVCCHECK_ENABLED="$( getproparg vm/kicker_vmsvccheck_enabled)" || \
 	    KICKER_VMSVCCHECK_ENABLED="false"
-        if [ x"$KICKER_VMSVCCHECK_ENABLED" = xtrue -a "x$VM_STATE" = xrunning ]; then
+	if [ x"$KICKER_VMSVCCHECK_ENABLED" = xtrue -a "x$VM_STATE" = xrunning ]; then
 	    KICKER_VMSVCCHECK_METHOD="$( getproparg vm/kicker_vmsvccheck_method)" || \
 		KICKER_VMSVCCHECK_METHOD=""
 	    if [ x"$KICKER_VMSVCCHECK_METHOD" != x -a -x "$KICKER_VMSVCCHECK_METHOD" ]; then
 		KICKER_VMSVCCHECK_STARTDELAY="$( getproparg vm/kicker_vmsvccheck_startdelay)" || \
 		    KICKER_VMSVCCHECK_STARTDELAY="300"
 
-	        OK=yes
-		if [ x"$getTimeStamp" != x ]; then
-		    TS_NOW="`eval $getTimeStamp`" || TS_NOW=0
+		OK=yes
+		TS_NOW="`getTimeStamp`"
+		if [ $? = 0 ]; then
 		    if [  x"$TS_VM_STARTED" != x \
 			-a "$TS_VM_STARTED" -gt 0 \
 			-a "$TS_VM_STARTED" -le "$TS_NOW" \
 		    ]; then
 			if [ "$(($TS_NOW-$TS_VM_STARTED))" -lt "$KICKER_VMSVCCHECK_STARTDELAY" ]; then
 			    [ x"$KICKER_DEBUG" = xtrue ] && \
-				echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check hookis enabled, but delay time since VM start has not yet expired, skipping check"
+				echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE service check hook is enabled, but delay time since VM start has not yet expired, skipping check"
 			    OK=no
-		        fi
+			fi
 		    fi
-	        fi
+		fi
 
-	        if [ x"$OK" = xyes ]; then
-		    KICKER_VMSVCCHECK_METHOD_PARAMS="$( getproparg vm/kicker_vmsvccheck_method_params)" || \
+		if [ x"$OK" = xyes ]; then
+		    KICKER_VMSVCCHECK_METHOD_PARAMS="$( getproparg vm/kicker_vmsvccheck_method_params | sed 's,\\\\ , ,g' | sed 's,\\ , ,g')" || \
 			KICKER_VMSVCCHECK_METHOD_PARAMS=""
 
 		    "$KICKER_VMSVCCHECK_METHOD" $KICKER_VMSVCCHECK_METHOD_PARAMS
@@ -981,162 +1057,146 @@ kick() {
 		    case "$KICKER_VMSVCCHECK_RESULT" in
 			0) ### OK
 			    [ x"$VMSVCCHECK_COUNTER" != x ] && \
-				echo "KICKER-INFO: resetting error counter (was $VMSVCCHECK_COUNTER)"
+				echo "KICKER-INFO: resetting error counter (list was $VMSVCCHECK_COUNTER)"
 			    VMSVCCHECK_COUNTER=""
 			    ;;
 			1) ### Single error
-			    echo "KICKER-INFO: increasing error counter (was ${VMSVCCHECK_COUNTER:-0})"
+			    echo "KICKER-INFO: increasing error counter (list was ${VMSVCCHECK_COUNTER:-0})"
 			    if ! addVMSvcCheckCounter; then
-			        echo "KICKER-INFO: requesting VM reboot due to repeated service-check failures..."
+				echo "KICKER-INFO: requesting VM reboot due to repeated service-check failures..."
 				if reboot_vm "$INSTANCE"; then
 				    echo "KICKER-INFO: resetting error counters and startup-delay check"
 				    NEW_SVC_STATE=online
-			    	    if [ x"$getTimeStamp" != x ]; then
-			    	        TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
-				    fi
-			    	    VMSVCCHECK_COUNTER=""
-			        else
+				    TS_VM_STARTED="`getTimeStamp`"
+				    VMSVCCHECK_COUNTER=""
+				else
 				    NEW_SVC_STATE=maintenance
 				fi
 			    fi
 			    ;;
-		        2) ### Instant reboot
+			2) ### Instant reboot
 			    echo "KICKER-INFO: requesting VM reboot due to a fatal service-check failure..."
 			    if reboot_vm "$INSTANCE"; then
-			        echo "KICKER-INFO: resetting error counters and startup-delay check"
+				echo "KICKER-INFO: resetting error counters and startup-delay check"
 				NEW_SVC_STATE=online
-			        VMSVCCHECK_COUNTER=""
+				VMSVCCHECK_COUNTER=""
 			    else
-			        NEW_SVC_STATE=maintenance
+				NEW_SVC_STATE=maintenance
 			    fi
-			    if [ x"$getTimeStamp" != x ]; then
-			        TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
-			    fi
+			    TS_VM_STARTED="`getTimeStamp`"
 			    ;;
 			3) ### cause SMF maintenance
 			    echo "KICKER-INFO: requesting SMF maintenance due to critical service-check failures..."
 			    NEW_SVC_STATE="maintenance"
 			    ;;
 			esac
-	        fi
+		fi
 	    else
 		[ x"$KICKER_DEBUG" = xtrue ] && echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE has KICKER_VMSVCCHECK_ENABLED but no valid method: '$KICKER_VMSVCCHECK_METHOD'"
 	    fi
-        fi
-        ;;
+	fi
+	;;
     xaborted)
-        if [ "x$RESTART_ABORTED_VM" = "xtrue" ]; then
+	if [ "x$RESTART_ABORTED_VM" = "xtrue" ]; then
 	    if addAbortedCounter; then
-        	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to start..."
-    		start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
-
-		if [ x"$getTimeStamp" != x ]; then
-		    TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
-		fi
+		echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to start..."
+		start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
+		TS_VM_STARTED="`getTimeStamp`"
 	    else
-        	echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, too many times (max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds. Requesting maintenance mode!"
+		echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, too many times (max = $RESTART_ABORTED_VM_FAILURES_MAXCOUNT) over the past $RESTART_ABORTED_VM_FAILURES_TIMEFRAME seconds. Requesting maintenance mode!"
 		NEW_SVC_STATE=maintenance
 	    fi
-        else
-            echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
-            echo "KICKER-INFO: to auto-start an aborted VM set its 'vm/restart_aborted_vm' SMF property to 'boolean: true'."
-            NEW_SVC_STATE="maintenance"
-        fi
-        ;;
+	else
+	    echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
+	    echo "KICKER-INFO: to auto-start an aborted VM set its 'vm/restart_aborted_vm' SMF property to 'boolean: true'."
+	    NEW_SVC_STATE="maintenance"
+	fi
+	;;
     xpaused)
-        ### A VM can also be paused if it is saving to disk
-        if [ "x$IGNORE_PAUSED_VM" != "xtrue" ]; then
-            [ -f "$KICKER_NOKICK_FILE_NAME" ] && \
+	### A VM can also be paused if it is saving to disk
+	if [ "x$IGNORE_PAUSED_VM" != "xtrue" ]; then
+	    [ -f "$KICKER_NOKICK_FILE_NAME" ] && \
 		echo "KICKER-INFO: located '$KICKER_NOKICK_FILE_NAME', skipping cycle" && \
 		return 0
 
-            if [ "x$RESTART_PAUSED_VM" = "xtrue" ]; then
-        	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to unpause..."
-        	resume_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
-
-	        if [ x"$getTimeStamp" != x ]; then
-	    	    TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
-		fi
-            else
-        	echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
-        	echo "KICKER-INFO: to auto-unpause a VM set its 'vm/restart_paused_vm' SMF property to 'boolean: true'."
-        	NEW_SVC_STATE="offline"
-            fi
-        else
+	    if [ "x$RESTART_PAUSED_VM" = "xtrue" ]; then
+		echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to unpause..."
+		resume_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
+		TS_VM_STARTED="`getTimeStamp`"
+	    else
+		echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
+		echo "KICKER-INFO: to auto-unpause a VM set its 'vm/restart_paused_vm' SMF property to 'boolean: true'."
+		NEW_SVC_STATE="offline"
+	    fi
+	else
 	    ### If we asked to ignore the paused state, we might not want SPAM in logs ;)
 	    GOT_PAUSED="$(($GOT_PAUSED+1))" || GOT_PAUSED=0
-            [ x"$KICKER_DEBUG" = xtrue -o x"$GOT_PAUSED" = x1 ] && echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE. Ignoring per SMF service configuration."
-        fi
-        ;;
+	    [ x"$KICKER_DEBUG" = xtrue -o x"$GOT_PAUSED" = x1 ] && echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE. Ignoring per SMF service configuration."
+	fi
+	;;
     xpoweroff)
-        if [ "x$RESTART_HALTED_VM" = "xtrue" ]; then
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to start..."
-            start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
-
-	    if [ x"$getTimeStamp" != x ]; then
-		TS_VM_STARTED="`eval $getTimeStamp`" || TS_VM_STARTED=0
-	    fi
-        else
-            echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
-            echo "KICKER-INFO: to auto-restart a halted VM set its 'vm/restart_halted_vm' SMF property to 'boolean: true'."
-            NEW_SVC_STATE="offline"
-        fi
-        ;;
+	if [ "x$RESTART_HALTED_VM" = "xtrue" ]; then
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, trying to start..."
+	    start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
+	    TS_VM_STARTED="`getTimeStamp`"
+	else
+	    echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
+	    echo "KICKER-INFO: to auto-restart a halted VM set its 'vm/restart_halted_vm' SMF property to 'boolean: true'."
+	    NEW_SVC_STATE="offline"
+	fi
+	;;
     xsaved)
-        [ -f "$KICKER_NOKICK_FILE_NAME" ] && echo "KICKER-INFO: located '$KICKER_NOKICK_FILE_NAME', skipping cycle" && return 0
-        RESTART_SAVED_VM_ONCE_FILE_NAME="$( getproparg vm/kicker_restart_saved_vm_once_file_name )" || \
-        RESTART_SAVED_VM_ONCE_FILE_NAME=""
+	[ -f "$KICKER_NOKICK_FILE_NAME" ] && echo "KICKER-INFO: located '$KICKER_NOKICK_FILE_NAME', skipping cycle" && return 0
+	RESTART_SAVED_VM_ONCE_FILE_NAME="$( getproparg vm/kicker_restart_saved_vm_once_file_name )" || \
+	RESTART_SAVED_VM_ONCE_FILE_NAME=""
 
-        [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x'""' -o \
-          x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"''" -o \
-          x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"true" ] && RESTART_SAVED_VM_ONCE_FILE_NAME=""
-        [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x -a -w "/var/run" -a x"$RUNAS" = x ] && \
+	[ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x'""' -o \
+	  x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"''" -o \
+	  x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"true" ] && RESTART_SAVED_VM_ONCE_FILE_NAME=""
+	[ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x -a -w "/var/run" -a x"$RUNAS" = x ] && \
 	    RESTART_SAVED_VM_ONCE_FILE_NAME="/var/run/.vboxsvc-kicker-$INSTANCE.restart_saved_once"
-        [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x ] && \
+	[ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x ] && \
 	    RESTART_SAVED_VM_ONCE_FILE_NAME="/tmp/.vboxsvc-kicker-$INSTANCE.restart_saved_once"
 
-        echo "RESTART_SAVED_VM_ONCE_FILE_NAME='$RESTART_SAVED_VM_ONCE_FILE_NAME'"
-        if [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" != xfalse ]; then
-    	    if [ -f "$RESTART_SAVED_VM_ONCE_FILE_NAME" ]; then
+	echo "RESTART_SAVED_VM_ONCE_FILE_NAME='$RESTART_SAVED_VM_ONCE_FILE_NAME'"
+	if [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" != xfalse ]; then
+	    if [ -f "$RESTART_SAVED_VM_ONCE_FILE_NAME" ]; then
 		echo "KICKER-INFO: Found a 'RESTART_SAVED_VM_ONCE_FILE_NAME'='$RESTART_SAVED_VM_ONCE_FILE_NAME' file,"
 		echo "      enforcing a saved VM restart attempt this time."
 
 		rm -f "$RESTART_SAVED_VM_ONCE_FILE_NAME"
 		RESTART_SAVED_VM=true
 	    fi
-        fi
+	fi
 
-        if [ "x$RESTART_SAVED_VM" = "xtrue" ]; then
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got in state $VM_STATE, trying to unpause..."
-            start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
-
-	    if [ x"$getTimeStamp" != x ]; then
-		TS_VM_STARTED="`eval $getTimeStamp`" | TS_VM_STARTED=0
-	    fi
-    	else
-            echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
-            echo "KICKER-INFO: to auto-unpause a saved VM set its 'vm/restart_saved_vm' SMF property to 'boolean: true'."
-            NEW_SVC_STATE="offline"
-        fi
-        ;;
+	if [ "x$RESTART_SAVED_VM" = "xtrue" ]; then
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE got in state $VM_STATE, trying to unpause..."
+	    start_vm $INSTANCE && NEW_SVC_STATE=online || NEW_SVC_STATE=maintenance
+	    TS_VM_STARTED="`getTimeStamp`"
+	else
+	    echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE got into state $VM_STATE, but I won't start it."
+	    echo "KICKER-INFO: to auto-unpause a saved VM set its 'vm/restart_saved_vm' SMF property to 'boolean: true'."
+	    NEW_SVC_STATE="offline"
+	fi
+	;;
     xsaving)
-        echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is now in state $VM_STATE, I can't start it. Maybe next cycle?"
-        return 0
-        ;;
+	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is now in state $VM_STATE, I can't start it. Maybe next cycle?"
+	return 0
+	;;
     "")
-        echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in bogus state (empty string),  I can't start it now. Has the host just booted?.. Hopefully next KICKER cycles would succeed."
-        return 0
-        ;;
+	echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in bogus state (empty string), I can't start it now. Has the host just booted?.. Hopefully next KICKER cycles would succeed."
+	return 0
+	;;
     *)
-        UNKNOWN_STATE_COUNTER="$(($UNKNOWN_STATE_COUNTER_PRV+1))" || UNKNOWN_STATE_COUNTER=1
-        UNKNOWN_STATE_COUNTER_MAX="`getproparg vm/offline_unknown_state_maxcount`" || UNKNOWN_STATE_COUNTER_MAX=0
-        if [ "$UNKNOWN_STATE_COUNTER_MAX" -ge 0 ]; then
+	UNKNOWN_STATE_COUNTER="$(($UNKNOWN_STATE_COUNTER_PRV+1))" || UNKNOWN_STATE_COUNTER=1
+	UNKNOWN_STATE_COUNTER_MAX="`getproparg vm/offline_unknown_state_maxcount`" || UNKNOWN_STATE_COUNTER_MAX=0
+	if [ "$UNKNOWN_STATE_COUNTER_MAX" -ge 0 ]; then
 	    echo "KICKER-ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is now in unknown state $VM_STATE, I can't start it."
 	    if [ "$UNKNOWN_STATE_COUNTER" -gt "$UNKNOWN_STATE_COUNTER_MAX" ]; then
-        	echo "KICKER-ERROR: offlining SMF service (counter $UNKNOWN_STATE_COUNTER > max $UNKNOWN_STATE_COUNTER_MAX)."
-        	NEW_SVC_STATE="offline"
+		echo "KICKER-ERROR: offlining SMF service (counter $UNKNOWN_STATE_COUNTER > max $UNKNOWN_STATE_COUNTER_MAX)."
+		NEW_SVC_STATE="offline"
 	    fi
-        else
+	else
 	    if [ x"$UNKNOWN_STATE_PRV" != x"$VM_STATE" ]; then
 		UNKNOWN_STATE_COUNTER=1
 	    fi
@@ -1145,21 +1205,21 @@ kick() {
 	    if [ "$UNKNOWN_STATE_COUNTER" = 1 ]; then
 		echo "KICKER-INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is now in unknown state $VM_STATE, I can't start it. Offlining SMF service is disabled. Reporting only once."
 	    fi
-        fi
-        ;;
+	fi
+	;;
     esac
 
     if [ "$UNKNOWN_STATE_COUNTER" = 0 ]; then
-        UNKNOWN_STATE_PRV=""
+	UNKNOWN_STATE_PRV=""
     fi
 
     if [ x"$NEW_SVC_STATE" != x"$SVC_STATE" ]; then
-        if [ x"$NEW_SVC_STATE" = xoffline -a \
+	if [ x"$NEW_SVC_STATE" = xoffline -a \
 	     x"$( GETPROPARG_QUIET=true getproparg vm/offline_is_maint )" = xtrue \
 	]; then
-            echo "KICKER-INFO: `LANG=C TZ=UTC date`: configured to cause MAINTENANCE instead of OFFLINE."
+	    echo "KICKER-INFO: `LANG=C TZ=UTC date`: configured to cause MAINTENANCE instead of OFFLINE."
 	    NEW_SVC_STATE="maintenance"
-        fi
+	fi
 
 ### NOTE: an unprivileged user may not have the rights to use svcadm
 ### In this case the simple loop-break would cause maintenance and
@@ -1169,65 +1229,65 @@ kick() {
 ### See docs for proper privilege delegation via RBAC profiles, i.e.
 ### http://hub.opensolaris.org/bin/view/Community+Group+smf/faq  chapter 2.1
 
-        echo "KICKER-INFO: `LANG=C TZ=UTC date`: requesting SMF '$NEW_SVC_STATE' state (was '$SVC_STATE')."
+	echo "KICKER-INFO: `LANG=C TZ=UTC date`: requesting SMF '$NEW_SVC_STATE' state (was '$SVC_STATE')."
 
 	### By arbitrarily chosen default, we remain in current SMF status
 	### (which is probably online). Maybe the VM will come back by user
 	### activity in VirtualBox GUI or command-line interface?
-        SVCADM_RET=-1
-        SVCADM_OUT=""
+	SVCADM_RET=-1
+	SVCADM_OUT=""
 
-        if [ x"$NEW_SVC_STATE" = xonline ]; then
+	if [ x"$NEW_SVC_STATE" = xonline ]; then
 	    ### Not sure if we'll really ever get to this point
-    	    SVCADM_OUT="`LANG=C svcadm clear "$SMF_FMRI" 2>&1; LANG=C svcadm enable -t "$SMF_FMRI" 2>&1`"
-    	    SVCADM_RET=$?
-        fi
+	    SVCADM_OUT="`LANG=C svcadm clear "$SMF_FMRI" 2>&1; LANG=C svcadm enable -t "$SMF_FMRI" 2>&1`"
+	    SVCADM_RET=$?
+	fi
 
-        if [ x"$NEW_SVC_STATE" = xmaintenance ]; then
-    	    SVCADM_OUT="`LANG=C svcadm mark -tI maintenance "$SMF_FMRI" 2>&1`"
-    	    SVCADM_RET=$?
-        fi
+	if [ x"$NEW_SVC_STATE" = xmaintenance ]; then
+	    SVCADM_OUT="`LANG=C svcadm mark -tI maintenance "$SMF_FMRI" 2>&1`"
+	    SVCADM_RET=$?
+	fi
 
-        if [ x"$NEW_SVC_STATE" = xoffline ]; then
+	if [ x"$NEW_SVC_STATE" = xoffline ]; then
 	    ### The VM was shut down and our flags specify that
 	    ### it should not be restarted. 
-    	    SVCADM_OUT="`LANG=C svcadm disable -t "$SMF_FMRI" 2>&1`"
-    	    SVCADM_RET=$?
-        fi
+	    SVCADM_OUT="`LANG=C svcadm disable -t "$SMF_FMRI" 2>&1`"
+	    SVCADM_RET=$?
+	fi
 
-        if [ x"$SVCADM_RET" = "x-1" ]; then
+	if [ x"$SVCADM_RET" = "x-1" ]; then
 	    echo "INFO: svcadm not called. Strange..."
 	    return 0
-        fi
+	fi
 
-        if echo "$SVCADM_OUT" | grep "Permission denied" >/dev/null; then
+	if echo "$SVCADM_OUT" | grep "Permission denied" >/dev/null; then
 	    ### Expecting failure for non-root users...
 	    echo "INFO: execution user '`id`' is not allowed to manipulate his SMF service. See docs on SMF and RBAC delegation, i.e. http://hub.opensolaris.org/bin/view/Community+Group+smf/faq  chapter 2.1"
 	    echo "INFO: trying to set KICKER blockfile. Enabled ?= '$KICKER_BLOCKFILE_ENABLED'"
 	    setBlockFile
 	    [ x"$SVCADM_RET" = x0 ] && SVCADM_RET=-2
-        else
-            if [ x"$SVCADM_RET" != x0 ]; then
-    		### Whatever the reason, we wanted maintenance anyway...
-    		if [ x"$NEW_SVC_STATE" = xmaintenance -o \
-    		     x"$NEW_SVC_STATE" = xoffline \
+	else
+	    if [ x"$SVCADM_RET" != x0 ]; then
+		### Whatever the reason, we wanted maintenance anyway...
+		if [ x"$NEW_SVC_STATE" = xmaintenance -o \
+		    x"$NEW_SVC_STATE" = xoffline \
 		]; then
 		    echo "INFO: failed SMF manipulation to disable service."
-	    	    echo "INFO: trying to set KICKER blockfile. Enabled ?= '$KICKER_BLOCKFILE_ENABLED'"
-    		    setBlockFile
-    		fi
-            fi
-        fi
+		    echo "INFO: trying to set KICKER blockfile. Enabled ?= '$KICKER_BLOCKFILE_ENABLED'"
+		    setBlockFile
+		fi
+	    fi
+	fi
 
-        if [ "$SVCADM_RET" -lt 0 ]; then
+	if [ "$SVCADM_RET" -lt 0 ]; then
 	    echo "INFO: internally detected svcadm error (return code $SVCADM_RET), output:"
-        else
+	else
 	    echo "INFO: svcadm return code ($SVCADM_RET), output:"
-        fi
-        echo "---"
-        echo "$SVCADM_OUT"
-        echo "---"
-        return "$SVCADM_RET"
+	fi
+	echo "---"
+	echo "$SVCADM_OUT"
+	echo "---"
+	return "$SVCADM_RET"
     fi
 
     return 0
@@ -1242,40 +1302,40 @@ start() {
 
     case "x$VM_STATE" in
     xrunning|xstarting|xrestoring)
-        echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is already in state $VM_STATE."
-        true
-        ;;
+	echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is already in state $VM_STATE."
+	true
+	;;
     xaborted)
-        if [ "x$START_ABORTED_VM" = "xtrue" ]; then
-            echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE was in state $VM_STATE, trying to start..."
-            start_vm $INSTANCE
-        else
-            echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I can't start it."
-            echo "INFO: to auto-start an aborted VM set its 'vm/start_aborted_vm' SMF property to 'boolean: true'."
-            false
-        fi
-        ;;
+	if [ "x$START_ABORTED_VM" = "xtrue" ]; then
+	    echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE was in state $VM_STATE, trying to start..."
+	    start_vm $INSTANCE
+	else
+	    echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I can't start it."
+	    echo "INFO: to auto-start an aborted VM set its 'vm/start_aborted_vm' SMF property to 'boolean: true'."
+	    false
+	fi
+	;;
     xpaused)
-        if [ "x$START_PAUSED_VM" = "xtrue" ]; then
-            echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE was in state $VM_STATE, trying to unpause..."
-            resume_vm $INSTANCE
-        else
-            echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I can't start it."
-            echo "INFO: to auto-unpause an aborted VM set its 'vm/start_paused_vm' SMF property to 'boolean: true'."
-            false
-        fi
-        ;;
+	if [ "x$START_PAUSED_VM" = "xtrue" ]; then
+	    echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE was in state $VM_STATE, trying to unpause..."
+	    resume_vm $INSTANCE
+	else
+	    echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I can't start it."
+	    echo "INFO: to auto-unpause an aborted VM set its 'vm/start_paused_vm' SMF property to 'boolean: true'."
+	    false
+	fi
+	;;
     xpoweroff|xsaved)
-        echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, trying to start..."
-        start_vm $INSTANCE
-        ;;
+	echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, trying to start..."
+	start_vm $INSTANCE
+	;;
     "") echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in bogus state (empty string),  I can't start it now. Has the host just booted?.. Hopefully next KICKER cycles would succeed."
-        true
-        ;;
+	true
+	;;
     *)
-        echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I can't start it."
-        false
-        ;;
+	echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I can't start it."
+	false
+	;;
     esac
 }
 
@@ -1284,12 +1344,12 @@ stop() {
 
     case "x$VM_STATE" in
     xrunning|xstarting|xrestoring|xpaused)
-        echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, trying to stop..."
-        stop_vm $INSTANCE
-        ;;
+	echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, trying to stop..."
+	stop_vm $INSTANCE
+	;;
     *)
-        echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I won't stop it any further."
-        ;;
+	echo "INFO: `LANG=C TZ=UTC date`: VM $INSTANCE is in state $VM_STATE, I won't stop it any further."
+	;;
     esac
 
 #    zfssnap "$INSTANCE" "poststopSMF"
@@ -1310,10 +1370,10 @@ stopOldKicker() {
 
 	### TODO: "kill: Permission denied" check. Maintenance?
 	[ x"$OLDPIDS" != x ] && echo "INFO: Trying to kill old KICKER loop (may fail if process already dead, worse if no perms). PID(s): $OLDPIDS and descendants..."
-        for P in $OLDPIDS; do
+	for P in $OLDPIDS; do
 	    pkill -P "$P"
 	    kill "$P"
-        done
+	done
 
     fi
 }
@@ -1323,7 +1383,7 @@ removeBlockFile() {
 	 x"$KICKER_BLOCKFILE_NAME" != x -a \
 	-f "$KICKER_BLOCKFILE_NAME" \
     ]; then
-        rm -f "$KICKER_BLOCKFILE_NAME"
+	rm -f "$KICKER_BLOCKFILE_NAME"
 	if [ $? != 0 ]; then
 	    echo "ERROR: `LANG=C TZ=UTC date`: bogus file removal failed. Requesting maintenance mode! More data:"
 	    ls -lad "$KICKER_BLOCKFILE_NAME"
@@ -1335,7 +1395,7 @@ removeBlockFile() {
 
 setBlockFile() {
     if [ x"$KICKER_BLOCKFILE_ENABLED" = xtrue -a \
-         x"$KICKER_BLOCKFILE_NAME" != x \
+	 x"$KICKER_BLOCKFILE_NAME" != x \
     ]; then
 	MY_ID="`getUID`"
 	echo "INFO: `LANG=C TZ=UTC date`: creating KICKER block-file '$KICKER_BLOCKFILE_NAME' with tag '$MY_ID'..."
@@ -1355,14 +1415,14 @@ testBlockFile() {
 
 	### Check if age doesn't exceed set maximum
 	KICKER_BLOCKFILE_AGE="-1"
-	if [ x"$getFileTimeStamp" = x ]; then
+	if [ x"$getFileTimeStamp_CMD" = x ]; then
 	    echo "ERROR: getFileTimeStamp method unavailable. Can't check KICKER block-file age."
 	    echo "ERROR: Triggering SMF failure mode by setting zero block-file age."
-	    echo "ERROR: Remove block-file manually to enable VM service."
-	    echo "INFO: Consider installing gdate for better accuracy."
+	    echo "ERROR: Remove block-file manually to enable the VM's SMF service instance."
+	    echo "INFO: Consider installing gdate or perl for better accuracy."
 	else
-	    TS_NOW="`eval $getTimeStamp`" || TS_NOW=1
-	    TS_FILE="`eval $getFileTimeStamp "$KICKER_BLOCKFILE_NAME"`" || TS_FILE=0
+	    TS_NOW="`getTimeStamp`" || TS_NOW=1
+	    TS_FILE="`getFileTimeStamp "$KICKER_BLOCKFILE_NAME"`" || TS_FILE=0
 	    KICKER_BLOCKFILE_AGE="$(($TS_NOW-$TS_FILE))" || KICKER_BLOCKFILE_AGE="0"
 	    [ "$KICKER_BLOCKFILE_AGE" -lt 0 ] && echo "INFO: block-file age is negative ($KICKER_BLOCKFILE_AGE). Clock skew?"
 	fi
@@ -1468,35 +1528,117 @@ getState() {
     return $SVC_RET
 }
 
-getFileTimeStamp_GDATE() {
-    if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-	TZ=UTC $GDATE -u -r "$1" +%s
-	return
-    fi
-    echo 0
-    return 1
-}
-
-getFileTimeStamp_PERL() {
-    _OUT=$(TZ=UTC perl -e 'use File::stat;print stat("'"$1"'")->mtime . "\n";')
-    _RES=$?
-
-    if [ x"$_OUT" != x -a "$_RES" = 0 ]; then
-	echo "$_OUT"
-    else
-	echo 0
-    fi
-    return $_RES
-}
-
-############################################################################
-### Actual body of work
-
+######################################################################
 if [ x"$DEBUG_SMF" = x ]; then
     DEBUG_SMF="$( GETPROPARG_QUIET=true getproparg vm/debug_smf )"
     [ $? != 0 ] && DEBUG_SMF=false
 fi
 [ x"$DEBUG_SMF" = xtrue ] && echo "INFO: Enabling SMF script debug..." && set -x
+
+######################################################################
+### This is kinda like macro - detect a method to get epoch-time in seconds.
+### We prefer gdate as it's faster; perl may be more avaialble.
+### Both "PERL time()" and "gdate +%s" are documented to return the number
+### of seconds since the Epoch (1970-01-01 00:00:00 UTC on UNIX) and should
+### not require TZ=UTC or "gdate -u" tweaks. They won't hurt either ;)
+
+getFileTimeStamp_GDATE() {
+	if [ x"$GDATE" != x -a -x "$GDATE" ]; then
+		TZ=UTC $GDATE -u -r "$1" +%s
+		return
+	fi
+	echo 0
+	return 1
+}
+
+getFileTimeStamp_PERL() {
+	_OUT=$(TZ=UTC perl -e 'use File::stat;print stat("'"$1"'")->mtime . "\n";')
+	_RES=$?
+
+	if [ x"$_OUT" != x -a "$_RES" = 0 ]; then
+		echo "$_OUT"
+	else
+		echo 0
+	fi
+	return $_RES
+}
+
+getTimeStamp_CMD=""
+getFileTimeStamp_CMD=""
+
+getTimeStamp() {
+	if [ x"$getTimeStamp_CMD" != x ]; then
+		_TS="`eval $getTimeStamp_CMD`" && \
+			echo "$_TS" && return 0
+	fi
+	echo 0
+	return 1
+}
+
+getFileTimeStamp() {
+	if [ x"$getFileTimeStamp_CMD" != x ]; then
+		_TS="`eval $getFileTimeStamp_CMD "$1"`" && \
+			echo "$_TS" && return 0
+	fi
+	echo 0
+	return 1
+}
+
+### Now detect and select the timestamping method, if any
+if perl -e ';' 2>/dev/null; then
+    getTimeStamp_CMD="TZ=UTC perl -e 'print time() . \"\n\";'" && \
+    getFileTimeStamp_CMD="getFileTimeStamp_PERL"
+
+    if [ x"$DEBUG_SMF" = xtrue ]; then
+	echo "DEBUG: Timestamp PERL: `eval $getTimeStamp_CMD`"
+	echo "DEBUG: Filestamp PERL: `eval $getFileTimeStamp_CMD "$0"`"
+    fi
+fi
+
+### GNU date binary is a bit faster than PERL; try to use it by default
+GDATE_LIST="/opt/COSac/bin/gdate /opt/sfw/bin/gdate /usr/local/bin/date /usr/local/bin/gdate /usr/sfw/bin/gdate /usr/bin/gdate /usr/gnu/bin/date /opt/gnu/bin/date"
+
+# GDATE=""
+[ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
+
+[ x"$GDATE" = x ] && for F in $GDATE_LIST; do
+    if [ -x "$F" ]; then
+	GDATE="$F"
+	break
+    fi
+done
+[ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
+if [ x"$GDATE" = x ]; then
+    gdate && GDATE="`which gdate | head -1`"
+fi
+[ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
+
+if [ x"$GDATE" != x ]; then
+    getTimeStamp_CMD="TZ=UTC $GDATE -u +%s"
+    getFileTimeStamp_CMD="getFileTimeStamp_GDATE"
+    if [ x"$DEBUG_SMF" = xtrue ]; then
+	echo "DEBUG: Timestamp GDATE: `eval $getTimeStamp_CMD`"
+	echo "DEBUG: Filestamp GDATE: `eval $getFileTimeStamp_CMD "$0"`"
+    fi
+fi
+
+if [ x"$getTimeStamp_CMD" != x ]; then
+    if [ "`eval $getTimeStamp_CMD`" -gt 0 ]; then
+	true
+    else
+	### Invalid numbers, or negative values
+	echo "ERROR: Could not detect a proper getTimeStamp_CMD() method!" >&2
+	getTimeStamp_CMD=""
+	getFileTimeStamp_CMD=""
+    fi
+else
+    echo "ERROR: Could not detect a proper getTimeStamp_CMD() method!" >&2
+fi
+
+TS_SCRIPT_STARTED="`getTimeStamp`"
+
+############################################################################
+### Actual body of work
 
 GETPROPARG_QUIET=true get_run_as >/dev/null 2>/dev/null
 
@@ -1536,59 +1678,6 @@ KICKER_BLOCKFILE_MAXAGE="$( GETPROPARG_QUIET=true getproparg vm/kicker_blockfile
     KICKER_BLOCKFILE_NAME="/tmp/.vboxsvc-kicker-$INSTANCE.block"
 [ x"$KICKER_BLOCKFILE_MAXAGE" = x ] && KICKER_BLOCKFILE_MAXAGE="60"
 
-######################################################################
-### Kinda like macro - select a method to get epoch-time in seconds
-getTimeStamp=""
-getFileTimeStamp=""
-if perl -e ';' 2>/dev/null; then
-    getTimeStamp="perl -e 'print time() . \"\n\";'" && \
-    getFileTimeStamp="getFileTimeStamp_PERL"
-
-    if [ x"$DEBUG_SMF" = xtrue ]; then
-	echo "DEBUG: Timestamp PERL: `eval $getTimeStamp`"
-        echo "DEBUG: Filestamp PERL: `eval $getFileTimeStamp "$0"`"
-    fi
-fi
-
-### GNU date binary is a bit faster than PERL; try to use it by default
-GDATE_LIST="/opt/COSac/bin/gdate /opt/sfw/bin/gdate /usr/local/bin/date /usr/local/bin/gdate /usr/sfw/bin/gdate /usr/bin/gdate /usr/gnu/bin/date /opt/gnu/bin/date"
-
-# GDATE=""
-[ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
-
-[ x"$GDATE" = x ] && for F in $GDATE_LIST; do
-    if [ -x "$F" ]; then
-        GDATE="$F"
-        break
-    fi
-done
-[ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
-if [ x"$GDATE" = x ]; then
-    gdate && GDATE="`which gdate | head -1`"
-fi
-[ x"$GDATE" != x -a ! -x "$GDATE" ] && GDATE=""
-
-if [ x"$GDATE" != x ]; then
-    getTimeStamp="TZ=UTC $GDATE -u +%s"
-    getFileTimeStamp="getFileTimeStamp_GDATE"
-    if [ x"$DEBUG_SMF" = xtrue ]; then
-	echo "DEBUG: Timestamp GDATE: `eval $getTimeStamp`"
-	echo "DEBUG: Filestamp GDATE: `eval $getFileTimeStamp "$0"`"
-    fi
-fi
-
-if [ x"$getTimeStamp" != x ]; then
-    if [ "`eval $getTimeStamp`" -gt 0 ]; then
-	true
-    else
-	### Invalid numbers, or negative values
-	echo "ERROR: Could not detect a proper getTimeStamp() method!" >&2
-	getTimeStamp=""
-    fi
-else
-    echo "ERROR: Could not detect a proper getTimeStamp() method!" >&2
-fi
-
 #################################################################
 ### Process requested command-line actions and/or SMF methods ###
 #################################################################
@@ -1602,45 +1691,148 @@ start)
     VM_STATE="$( vm_state "$INSTANCE" )"
     case "x$VM_STATE" in
     xrunning|xstarting|xrestoring|xpaused)
-        echo "INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' is in state '$VM_STATE',"
-        echo "      trying to save VM state before starting SMF service..."
-        FORCE_STOP_METHOD=savestate stop_vm "$INSTANCE"
+	echo "INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' is in state '$VM_STATE',"
+	echo "      trying to save VM state before starting SMF service..."
+	FORCE_STOP_METHOD=savestate stop_vm "$INSTANCE"
 	;;
     esac
 
-    echo "INFO: trying to start VM '$INSTANCE'..."
+    echo "INFO: `LANG=C TZ=UTC date`: trying to start VM '$INSTANCE'..."
     start
     SVC_RET=$?
 
+    if [ "$SVC_RET" -ne 0 ]; then
+	echo "ERROR: `LANG=C TZ=UTC date`: VM $INSTANCE failed($SVC_RET) to do '$1'."
+	exit $SMF_EXIT_ERR_FATAL
+    fi
+
+    TS_VM_STARTED="`getTimeStamp`"
     ( ### KICKER loop
-      if [ x"$GDATE" != x -a -x "$GDATE" ]; then
-	 TS_VM_STARTED="`TZ=UTC $GDATE +%s`" || TS_VM_STARTED=0
-      fi
+	sleeper 20
+	echo "INFO: `LANG=C TZ=UTC date`: Starting KICKER monitoring of VM state."
+	echo "INFO: First KICKER run may report unset SMF service parameters"
+	echo "      where we had to apply defaults; further runs shouldn't."
 
-      sleeper 20
-      echo "INFO: `LANG=C TZ=UTC date`: Starting KICKER monitoring of VM state."
-      echo "INFO: First KICKER run may report unset SMF service parameters"
-      echo "      where we had to apply defaults; further runs shouldn't."
+	KICKER_NOKICK_FILE_NAME="$( GETPROPARG_QUIET=true getproparg vm/kicker_nokick_file_name)"
+	[    x"$KICKER_NOKICK_FILE_NAME" = x'""' \
+	  -o x"$KICKER_NOKICK_FILE_NAME" = x"''" \
+	  -o x"$KICKER_NOKICK_FILE_NAME" = x \
+	] && KICKER_NOKICK_FILE_NAME="$KICKER_PIDFILE_NAME.nokick"
 
-      KICKER_NOKICK_FILE_NAME="$( GETPROPARG_QUIET=true getproparg vm/kicker_nokick_file_name)"
-      [    x"$KICKER_NOKICK_FILE_NAME" = x'""' \
-	-o x"$KICKER_NOKICK_FILE_NAME" = x"''" \
-	-o x"$KICKER_NOKICK_FILE_NAME" = x \
-      ] && KICKER_NOKICK_FILE_NAME="$KICKER_PIDFILE_NAME.nokick"
+	KICKER_NOSLEEP=true kick || exit
 
-      KICKER_NOSLEEP=true kick || exit
+	### Just to inform the user if the variable is set...
+	RESTART_SAVED_VM_ONCE_FILE_NAME="$( getproparg vm/kicker_restart_saved_vm_once_file_name )" || \
+		RESTART_SAVED_VM_ONCE_FILE_NAME=""
 
-      ### Just to inform the user if the variable is set...
-      RESTART_SAVED_VM_ONCE_FILE_NAME="$( getproparg vm/kicker_restart_saved_vm_once_file_name )" || \
-	RESTART_SAVED_VM_ONCE_FILE_NAME=""
+	GETPROPARG_QUIET=true
+	export GETPROPARG_QUIET
+	echo "INFO: `LANG=C TZ=UTC date`: Starting KICKER endless loop for VM '$INSTANCE'"
 
-      GETPROPARG_QUIET=true
-      export GETPROPARG_QUIET
-      echo "INFO: `LANG=C TZ=UTC date`: Starting KICKER endless loop for VM '$INSTANCE'"
-
-      ### Here we enforce additional sleep, beside one defined by SMF property
-      while kick; do sleeper 10; done ) &
+	### Here we enforce additional sleep, beside one defined by SMF property
+	while kick; do sleeper 10; done ) &
     echo $! > "$KICKER_PIDFILE_NAME"
+
+    ### Here we begin the start method exit delay, if configured by user
+    ### The delay may be based on plain timeouts and/or on results of kicker's
+    ### monitoring VM service-check hook tests if those are configured.
+    START_WAIT_POLICY="$( GETPROPARG_QUIET=true getproparg vm/start_wait_policy)" || \
+	START_WAIT_POLICY="nodelay"
+    START_METHOD_TIMEOUT="$( GETPROPARG_QUIET=true getproparg start/timeout_seconds)" || \
+	START_METHOD_TIMEOUT="0"
+    START_METHOD_ENDTIME=0
+    if [ "$TS_SCRIPT_STARTED" -gt 0 -a "$START_METHOD_TIMEOUT" -gt 5 ]; then
+	### Here we arbitrarily give 5 seconds for errors and other failsafes
+	### so that the VM is not aborted by SMF preliminarily.
+	START_METHOD_ENDTIME="$(($TS_SCRIPT_STARTED + $START_METHOD_TIMEOUT - 5))"
+    fi
+
+    ### For possible VM service availability tests, we use KICKER_VMSVCCHECK_*
+    ### methods, if they are properly configured. Don't have to be enabled for
+    ### the KICKER itself, though ;)
+    KICKER_VMSVCCHECK_METHOD="$( getproparg vm/kicker_vmsvccheck_method)" || \
+	KICKER_VMSVCCHECK_METHOD=""
+    [ x"$KICKER_VMSVCCHECK_METHOD" != x -a ! -x "$KICKER_VMSVCCHECK_METHOD" ] && \
+	KICKER_VMSVCCHECK_METHOD=""
+    KICKER_VMSVCCHECK_METHOD_PARAMS="$( getproparg vm/kicker_vmsvccheck_method_params | sed 's,\\\\ , ,g' | sed 's,\\ , ,g')" || \
+	KICKER_VMSVCCHECK_METHOD_PARAMS=""
+
+    [ "$START_METHOD_ENDTIME" != 0 ] && case "$START_WAIT_POLICY" in
+	timeout|delay|wait)
+		START_WAIT_POLICY=timeout ;;
+	hook_strict|vmsvccheck_strict)
+		START_WAIT_POLICY=hook_strict
+		[ x"$KICKER_VMSVCCHECK_METHOD" = x ] && \
+			echo "START_WAIT-INFO: vm/start_wait_policy=$START_WAIT_POLICY was requested for VM '$INSTANCE', but no valid vm/kicker_vmsvccheck_method was provided. Falling back to plain start/timeout_seconds-5 delay." && \
+			START_WAIT_POLICY=timeout
+		;;
+	hook|hook_lax|vmsvccheck|on|true)
+		START_WAIT_POLICY=hook_lax
+		[ x"$KICKER_VMSVCCHECK_METHOD" = x ] && \
+			echo "START_WAIT-INFO: vm/start_wait_policy=$START_WAIT_POLICY was requested for VM '$INSTANCE', but no valid vm/kicker_vmsvccheck_method was provided. Falling back to plain start/timeout_seconds-5 delay." && \
+			START_WAIT_POLICY=timeout
+		;;
+	nodelay|off|none|false|nowait)
+		START_WAIT_POLICY=nodelay ;;
+	default|-|""|*)
+		START_WAIT_POLICY=nodelay ;;
+    esac
+
+    WAIT=nodelay
+    if [ x"$START_WAIT_POLICY" != xnodelay -a x"$START_METHOD_ENDTIME" != x -a "$START_METHOD_ENDTIME" -gt 0 ]; then
+	WAIT=yes
+	TS_NOW="`getTimeStamp`"
+	TO_SLEEP="$(($START_METHOD_ENDTIME-$TS_NOW))"
+	case "$START_WAIT_POLICY" in
+		timeout)
+			echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: START_WAIT_POLICY=$START_WAIT_POLICY: the start method will now delay exit by $TO_SLEEP seconds." ;;
+		hook_strict)
+			echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: START_WAIT_POLICY=$START_WAIT_POLICY: the start method will now delay exit by up to $TO_SLEEP seconds and require the KICKER_VMSVCCHECK_METHOD='$KICKER_VMSVCCHECK_METHOD $KICKER_VMSVCCHECK_METHOD_PARAMS' to succeed; fails otherwise." ;;
+		hook_lax)
+			echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: START_WAIT_POLICY=$START_WAIT_POLICY: the start method will now delay exit by up to $TO_SLEEP seconds and hope for KICKER_VMSVCCHECK_METHOD='$KICKER_VMSVCCHECK_METHOD $KICKER_VMSVCCHECK_METHOD_PARAMS' to succeed (not required)." ;;
+	esac
+    fi
+
+    KICKER_VMSVCCHECK_RESULT="NA"
+    while [ "$WAIT" = yes ]; do
+	TS_NOW="`getTimeStamp`"
+	[ "$START_METHOD_ENDTIME" -le "$TS_NOW" ] && WAIT=expired
+	[ "$WAIT" = yes ] && case "$START_WAIT_POLICY" in
+		timeout)
+			sleep 1 ;;
+		hook*)
+			### TODO: Hook execution can take longer than the SMF
+			### timeout we are aware of. Devise a way to interrupt
+			### the svc-check for hook_lax (sleeping self-killer?)
+			### so that our guarantee of exiting 0 on hook_lax holds!
+			"$KICKER_VMSVCCHECK_METHOD" $KICKER_VMSVCCHECK_METHOD_PARAMS
+			KICKER_VMSVCCHECK_RESULT=$?
+			if [ "$KICKER_VMSVCCHECK_RESULT" = 0 ]; then
+				WAIT=hook_ok
+			else
+				sleep 1
+			fi
+			;;
+		nodelay|*) ### Just in case - abort loop
+			echo "START_WAIT-WARN: erratic START_WAIT_POLICY=$START_WAIT_POLICY, aborting delay loop."
+			WAIT=nodelay ;;
+	esac
+    done
+
+    case "$WAIT" in
+	hook_ok)		echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' provides its services now! Quitting OK!" ;;
+	expired) case "$START_WAIT_POLICY" in
+		timeout)	echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' delay timer expired! Quitting OK!" ;;
+		hook_lax)	echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' delay timer expired! Last hook check status: $KICKER_VMSVCCHECK_RESULT. Quitting OK!" ;;
+		hook_strict)	if [ "$KICKER_VMSVCCHECK_RESULT" = 0 ]; then
+					echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' delay timer expired! Last hook check status: $KICKER_VMSVCCHECK_RESULT. Quitting OK!"
+				else
+					echo "START_WAIT-INFO: `LANG=C TZ=UTC date`: VM '$INSTANCE' delay timer expired! Last hook check status: $KICKER_VMSVCCHECK_RESULT. FAILING VM, falling into SMF-maintenance! (Overriding stop timeout to 120sec)"
+					VBOXSVC_TIMEOUT_OVERRIDE=120 stop &
+					exit $SMF_EXIT_ERR_FATAL
+				fi ;;
+		esac ;;
+    esac
     ;;
 stop)
     stopOldKicker
@@ -1649,6 +1841,10 @@ stop)
     ;;
 zfssnap)
     ZFSSNAP_FLAG_OVERRIDE=true zfssnap "$INSTANCE" "manual-zfssnap"
+    SVC_RET=$?
+    ;;
+dirlist)
+    dirlist "$INSTANCE"
     SVC_RET=$?
     ;;
 startgui)
@@ -1686,7 +1882,7 @@ startgui)
     if [ x"$RUNAS" != x ]; then
 	xhost +localhost
 	$RUNAS DISPLAY="$DISPLAY" /usr/bin/VBoxManage startvm "$INSTANCE" --type gui
-        SVC_RET="$?"
+	SVC_RET="$?"
     else
 	/usr/bin/VBoxManage startvm "$INSTANCE" --type gui
         SVC_RET="$?"
@@ -1699,20 +1895,20 @@ startgui)
     if [ x"$SVC_RET" = x0 ]; then
 	### Running as another user via 'su' may cause echoing of shell greetings
 	### we don't want them in property values, so run this as current user
-        RESTART_SAVED_VM_ONCE_FILE_NAME="$( getproparg vm/kicker_restart_saved_vm_once_file_name )" || \
-	RESTART_SAVED_VM_ONCE_FILE_NAME=""
+	RESTART_SAVED_VM_ONCE_FILE_NAME="$( getproparg vm/kicker_restart_saved_vm_once_file_name )" || \
+		RESTART_SAVED_VM_ONCE_FILE_NAME=""
 
-        [   x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x'""' -o \
+	[   x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x'""' -o \
 	    x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"''" -o \
-    	    x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"true" ] && \
+	    x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x"true" ] && \
 		RESTART_SAVED_VM_ONCE_FILE_NAME=""
 	[ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x -a -w "/var/run" -a x"$RUNAS" = x ] && \
 		RESTART_SAVED_VM_ONCE_FILE_NAME="/var/run/.vboxsvc-kicker-$INSTANCE.restart_saved_once"
 	[ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" = x ] && \
 		RESTART_SAVED_VM_ONCE_FILE_NAME="/tmp/.vboxsvc-kicker-$INSTANCE.restart_saved_once"
 
-        if [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" != xfalse ]; then
-#         if [ ! -f "$RESTART_SAVED_VM_ONCE_FILE_NAME" ]; then
+	if [ x"$RESTART_SAVED_VM_ONCE_FILE_NAME" != xfalse ]; then
+#	  if [ ! -f "$RESTART_SAVED_VM_ONCE_FILE_NAME" ]; then
 	    echo "INFO: trying to leave a RESTART_SAVED_VM_ONCE_FILE_NAME file ($RESTART_SAVED_VM_ONCE_FILE_NAME)..."
 	    $RUNAS touch "$RESTART_SAVED_VM_ONCE_FILE_NAME"
 #	  fi

@@ -14,3 +14,10 @@ Allow to set CPU Affinity in some manner...
 Change PKG paths to /opt/VirtualBox/vboxsvc (for sparse-root zones)?
 May be useless since one common kernel-side part of VirtualBox is
 installed and runs in global zone anyway.
+
+Add a command-line option to configure a new VM as an SMF instance?..
+
+Make sure the VM dies (or is saved) when KICKER breaks out of the 
+service to go into maintenance, service disabling, etc. Don't leave
+VMs running when their SMF instance is reported offline (have to do
+this manually for transient services).
