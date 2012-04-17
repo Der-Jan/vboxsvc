@@ -115,6 +115,11 @@ Updates in release 0.16 (2012-04-15):
 * Clarified some comments and log-reports (i.e. report the stop timeouts)
 * Try to survive 'svcadm refresh' which can seem like SMF offlining.
 
+Updates in release 0.17 (in development):
+* The getState() routine (i.e. the status command-line option) now checks
+  results of the monitoring hook if configured, and returns more "ps"
+  listing info.
+
 All thinkable behaviors and variables have been parametrized with SMF
 service properties (group "vm/" or system props in groups "start/",
 "stop/", etc.), and properties not defined at the instance level

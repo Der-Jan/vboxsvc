@@ -10,7 +10,7 @@
 # Copyright (c) 2009 Alexandre Dumont
 # (C) 2009 minor patches by Jim Klimov: start "saved" machines
 # (C) 2010-2012 larger patches by Jim Klimov, JCS COS&HT
-#       $Id: vbox.sh,v 1.62 2012/04/15 02:02:41 jim Exp $
+#       $Id: vbox.sh,v 1.64 2012/04/17 17:20:01 jim Exp $
 #	* process aborted, paused VM's
 #	* "vm/debug_smf" flag, "vm/nice" flag.
 #       * Inherit service-level default attribute values.
@@ -81,7 +81,7 @@ export LC_ALL
 
 printHelp() {
     echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2012 by Jim Klimov,"
-    echo '	$Id: vbox.sh,v 1.62 2012/04/15 02:02:41 jim Exp $'
+    echo '	$Id: vbox.sh,v 1.64 2012/04/17 17:20:01 jim Exp $'
     echo "	see http://vboxsvc.sourceforge.net/ for possible updates"
     echo "	building upon work (C) 2009 by Alexandre Dumont"
     echo "This method script supports SMF methods: { start | stop }"
@@ -1522,8 +1522,39 @@ getState() {
     svcs -p "$SMF_FMRI"
     echo "   'svcs' RETCODE = '$?'"
 
-    echo 'INFO: data from `ps` process listing:'
-    ps -ef | grep -v grep | grep "comment $INSTANCE"
+    echo 'INFO: data from `ps` process listing: VirtualBox processes:'
+    ps -ef | grep -v grep | egrep "(comment|startvm) $INSTANCE"
+
+    echo 'INFO: data from `ps` process listing: similarly named processes, possibly related:'
+    ps -efZ | grep -v grep | grep "$INSTANCE" | fgrep -v "$$"
+
+    ### For possible VM service availability tests, we use KICKER_VMSVCCHECK_*
+    ### methods, if they are properly configured. Don't have to be enabled for
+    ### the KICKER itself, though ;)
+    KICKER_VMSVCCHECK_METHOD="$( GETPROPARG_QUIET=true getproparg vm/kicker_vmsvccheck_method)" || \
+	KICKER_VMSVCCHECK_METHOD=""
+    [ x"$KICKER_VMSVCCHECK_METHOD" != x -a ! -x "$KICKER_VMSVCCHECK_METHOD" ] && \
+	KICKER_VMSVCCHECK_METHOD=""
+    KICKER_VMSVCCHECK_METHOD_PARAMS="$( GETPROPARG_QUIET=true getproparg vm/kicker_vmsvccheck_method_params | sed 's,\\\\ , ,g' | sed 's,\\ , ,g')" || \
+	KICKER_VMSVCCHECK_METHOD_PARAMS=""
+
+    if [ x"$KICKER_VMSVCCHECK_METHOD" != x ]; then
+	echo "INFO: a KICKER_VMSVCCHECK_METHOD is configured for VM '$INSTANCE'. Executing test:"
+	echo "      '$KICKER_VMSVCCHECK_METHOD' $KICKER_VMSVCCHECK_METHOD_PARAMS"
+
+	time "$KICKER_VMSVCCHECK_METHOD" $KICKER_VMSVCCHECK_METHOD_PARAMS
+	KICKER_VMSVCCHECK_RESULT=$?
+
+	echo    "INFO: KICKER_VMSVCCHECK_RESULT=$KICKER_VMSVCCHECK_RESULT (data not returned to caller of getState())."
+	echo -e "INFO: Standard return code interpretation for KICKER hooks: \c"
+	case "$KICKER_VMSVCCHECK_RESULT" in
+	    0) echo "OK" ;;
+	    1) echo "Bump counter (delayed reboot of VM for persistent/frequent errors)" ;;
+	    2) echo "Instantly reboot VM" ;;
+	    3) echo "Instantly cause SMF maintenance" ;;
+	    *) echo "UNDEFINED CODE" ;;
+	esac
+    fi
 
     return $SVC_RET
 }
