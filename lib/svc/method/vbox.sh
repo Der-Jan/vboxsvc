@@ -10,7 +10,7 @@
 # Copyright (c) 2009 Alexandre Dumont
 # (C) 2009 minor patches by Jim Klimov: start "saved" machines
 # (C) 2010-2012 larger patches by Jim Klimov, JCS COS&HT
-#       $Id: vbox.sh,v 1.64 2012/04/17 17:20:01 jim Exp $
+#       $Id: vbox.sh,v 1.65 2012/04/17 17:59:27 jim Exp $
 #	* process aborted, paused VM's
 #	* "vm/debug_smf" flag, "vm/nice" flag.
 #       * Inherit service-level default attribute values.
@@ -81,7 +81,7 @@ export LC_ALL
 
 printHelp() {
     echo "vboxsvc, an SMF method for VirtualBox: (C) 2010-2012 by Jim Klimov,"
-    echo '	$Id: vbox.sh,v 1.64 2012/04/17 17:20:01 jim Exp $'
+    echo '	$Id: vbox.sh,v 1.65 2012/04/17 17:59:27 jim Exp $'
     echo "	see http://vboxsvc.sourceforge.net/ for possible updates"
     echo "	building upon work (C) 2009 by Alexandre Dumont"
     echo "This method script supports SMF methods: { start | stop }"
@@ -111,6 +111,14 @@ printHelp() {
     echo "			20	VM aborted (VBox process died badly)"
     echo "			125	VM state string is empty (VBox bug)"
     echo "			126	VM state unknown by script"
+    echo ""
+    echo "	vmsvccheck|hook		Runs the monitoring script (if assigned) to"
+    echo "				test the VM's services working state as"
+    echo "				defined by local admin who made the script."
+    echo "		returns 0	VM test succceeded or not configured"
+    echo "			1	VM test failed, KICKER would bump counter"
+    echo "			2	VM test failed, KICKER would reboot VM"
+    echo "			3	VM test failed, KICKER would cause SMF failure"
     echo ""
     echo "	startgui (req: DISPLAY)	Saves VM state if needed, (re)starts with GUI"
     echo ""
@@ -1528,6 +1536,12 @@ getState() {
     echo 'INFO: data from `ps` process listing: similarly named processes, possibly related:'
     ps -efZ | grep -v grep | grep "$INSTANCE" | fgrep -v "$$"
 
+    CALLER=getState test_VMSVCCHECK
+
+    return $SVC_RET
+}
+
+test_VMSVCCHECK() {
     ### For possible VM service availability tests, we use KICKER_VMSVCCHECK_*
     ### methods, if they are properly configured. Don't have to be enabled for
     ### the KICKER itself, though ;)
@@ -1538,6 +1552,7 @@ getState() {
     KICKER_VMSVCCHECK_METHOD_PARAMS="$( GETPROPARG_QUIET=true getproparg vm/kicker_vmsvccheck_method_params | sed 's,\\\\ , ,g' | sed 's,\\ , ,g')" || \
 	KICKER_VMSVCCHECK_METHOD_PARAMS=""
 
+    KICKER_VMSVCCHECK_RESULT=0
     if [ x"$KICKER_VMSVCCHECK_METHOD" != x ]; then
 	echo "INFO: a KICKER_VMSVCCHECK_METHOD is configured for VM '$INSTANCE'. Executing test:"
 	echo "      '$KICKER_VMSVCCHECK_METHOD' $KICKER_VMSVCCHECK_METHOD_PARAMS"
@@ -1545,18 +1560,28 @@ getState() {
 	time "$KICKER_VMSVCCHECK_METHOD" $KICKER_VMSVCCHECK_METHOD_PARAMS
 	KICKER_VMSVCCHECK_RESULT=$?
 
-	echo    "INFO: KICKER_VMSVCCHECK_RESULT=$KICKER_VMSVCCHECK_RESULT (data not returned to caller of getState())."
+	if [ x"$CALLER" = xgetState ]; then
+	    echo    "INFO: KICKER_VMSVCCHECK_RESULT=$KICKER_VMSVCCHECK_RESULT (data not returned to caller of getState())."
+	else
+	    echo    "KICKER_VMSVCCHECK_RESULT=$KICKER_VMSVCCHECK_RESULT"
+	fi
+
 	echo -e "INFO: Standard return code interpretation for KICKER hooks: \c"
 	case "$KICKER_VMSVCCHECK_RESULT" in
 	    0) echo "OK" ;;
-	    1) echo "Bump counter (delayed reboot of VM for persistent/frequent errors)" ;;
+	    1) echo "Bump counter (delayed reboot of VM)" ;;
 	    2) echo "Instantly reboot VM" ;;
 	    3) echo "Instantly cause SMF maintenance" ;;
 	    *) echo "UNDEFINED CODE" ;;
 	esac
+    else
+	if [ x"$CALLER" != xgetState ]; then
+	    echo "INFO: KICKER_VMSVCCHECK_METHOD is not defined or valid, test skipped."
+	    ### No errors detected - no method; return 0
+	fi
     fi
 
-    return $SVC_RET
+    return $KICKER_VMSVCCHECK_RESULT
 }
 
 ######################################################################
@@ -1951,6 +1976,12 @@ startgui)
 getstate|state|status)
     ### export SMF_FMRI='svc:/site/xvm/vbox:VM_NAME' in the caller
     getState
+    SVC_RET=$?
+    exit $SVC_RET
+    ;;
+vmsvccheck|hook)
+    ### export SMF_FMRI='svc:/site/xvm/vbox:VM_NAME' in the caller
+    test_VMSVCCHECK
     SVC_RET=$?
     exit $SVC_RET
     ;;

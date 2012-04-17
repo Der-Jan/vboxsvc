@@ -117,8 +117,10 @@ Updates in release 0.16 (2012-04-15):
 
 Updates in release 0.17 (in development):
 * The getState() routine (i.e. the status command-line option) now checks
-  results of the monitoring hook if configured, and returns more "ps"
-  listing info.
+  results of the monitoring hook if configured (outputs test results, but
+  does not influence return code), and returns more "ps" listing info.
+* Added command-line action "vmsvccheck" to run the monitoring hook script
+  if configured for the VM, and return its result code.
 
 All thinkable behaviors and variables have been parametrized with SMF
 service properties (group "vm/" or system props in groups "start/",
