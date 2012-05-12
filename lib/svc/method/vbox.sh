@@ -644,9 +644,9 @@ zfssnap() {
 
     SNAPTAG="$ZFSSNAP_PREFIX:$1:$2:$VM_STATE:`TZ=UTC date -u "+%Y-%m-%dz%H:%M"`"
 
-    ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg zfssnap_dslist )" || \
+    ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg vm/zfssnap_dslist )" || \
 	ZFSSNAP_DSLIST="auto"
-    ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg zfssnap_dslist_append )" || \
+    ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true; [ x"$DEBUG_SMF" = xtrue ] && GETPROPARG_QUIET=false; export GETPROPARG_QUIET; getproparg vm/zfssnap_dslist_append )" || \
 	ZFSSNAP_DSLIST_APPEND=""
 
     if [ x"$ZFSSNAP_DSLIST" = xauto ]; then
@@ -672,7 +672,7 @@ zfssnap() {
 	    ### NOTE: Technically this can hang or timeout for NFS shares
 	    ### Such condition would not let the VM work anyway, so special
 	    ### tricks like time-limited running are not required here.
-	    ZFSSNAP_DSLIST="`/bin/df -k $VM_FILES | awk '{print $NF}' | \
+	    ZFSSNAP_DSLIST="`/usr/gnu/bin/df -P -k $VM_FILES | awk '{print $NF}' | \
 		grep '/' | sort | uniq | while read D; do \
 		[ -d "$D/.zfs/snapshot" ] && echo "$D"; done`"
 
@@ -745,22 +745,25 @@ dirlist() {
 
     echo "Listing FS objects related to VM '$1':"
 
-    ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true getproparg zfssnap_dslist )" || \
+    ZFSSNAP_DSLIST="$( GETPROPARG_QUIET=true getproparg vm/zfssnap_dslist )" || \
 	ZFSSNAP_DSLIST="auto"
-    ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true getproparg zfssnap_dslist_append )" || \
+    ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true getproparg vm/zfssnap_dslist_append )" || \
 	ZFSSNAP_DSLIST_APPEND=""
 
-    VM_FILES="$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
+    OLDIFS=$IFS
+    IFS=$(echo -en "\n\b")
+    
+    VM_FILES=$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
 		--details --machinereadable | \
-	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*)="/' | \
-	    cut -d '"' -f2 )"
+	    egrep -i '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*|"SATA Controller-[0-9]+-[0-9]+"|"IDE Controller-[0-9]+-[0-9]+")="/' | \
+	    cut -d '=' -f2 | cut -d '"' -f2 )
 
     ### Solaris 'df' allows to pass it filenames and see their FS mounts
     ZFSSNAP_DSLIST_AUTO=""
     if [ x"$VM_FILES" != x ]; then
-	ZFSSNAP_DSLIST_AUTO="`/bin/df -k $VM_FILES | awk '{print $NF}' | \
-		grep '/' | sort | uniq | while read D; do \
-		[ -d "$D/.zfs/snapshot" ] && echo "$D"; done`"
+	ZFSSNAP_DSLIST_AUTO=`/usr/gnu/bin/df -P -k -t zfs $VM_FILES | awk '{print $1}' | \
+		grep '/' | sort | uniq | /usr/gnu/bin/xargs -d '\\n' zfs get -H mountpoint | /usr/gnu/bin/awk -F '\\t' '{print $3}' | while read D; do \
+		[ -d "$D/.zfs/snapshot" ] && echo "$D"; done`
     fi
 
     case "$ZFSSNAP_DSLIST" in
@@ -798,6 +801,7 @@ dirlist() {
 		    echo "	$D"
 		done ;;
     esac
+    IFS=$OLDIFS
 }
 
 ABORT_COUNTER=""
