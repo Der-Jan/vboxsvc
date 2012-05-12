@@ -652,12 +652,15 @@ zfssnap() {
     if [ x"$ZFSSNAP_DSLIST" = xauto ]; then
 	ZFSSNAP_DSLIST=""
 
+    RUNASA=($RUNAS)
+    OLDIFS=$IFS
+    IFS=$(echo -en "\t\n\b")
 	### TODO: Not certain about SCSI grepping, needs testing
 	echo "INFO: Trying to detect VM-related ZFS datasets..."
-	VM_FILES="$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
+	VM_FILES=$( ${RUNASA[*]} /usr/bin/VBoxManage showvminfo "$1" \
 		--details --machinereadable | \
-	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*)="/' | \
-	    cut -d '"' -f2 )"
+	    egrep '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*|"SATA Controller-[0-9]+-[0-9]+"|"IDE Controller-[0-9]+-[0-9]+")="/' | \
+	    cut -d '=' -f2 | cut -d '"' -f2 )
 
 	if [ $? -ne 0 ]; then
 	    echo "ERROR: Failed to get list of component files for VM $1" >&2
@@ -672,8 +675,8 @@ zfssnap() {
 	    ### NOTE: Technically this can hang or timeout for NFS shares
 	    ### Such condition would not let the VM work anyway, so special
 	    ### tricks like time-limited running are not required here.
-	    ZFSSNAP_DSLIST="`/usr/gnu/bin/df -P -k $VM_FILES | awk '{print $NF}' | \
-		grep '/' | sort | uniq | while read D; do \
+	    ZFSSNAP_DSLIST="`/usr/gnu/bin/df -P -k -t zfs $VM_FILES | awk '{print $1}' | \
+		grep '/' | sort | uniq | /usr/gnu/bin/xargs -d '\\n' zfs get -H mountpoint | /usr/gnu/bin/awk -F '\\t' '{print $3}' | while read D; do \
 		[ -d "$D/.zfs/snapshot" ] && echo "$D"; done`"
 
 	    [ x"$DEBUG_SMF" = xtrue ] && \
@@ -707,7 +710,7 @@ zfssnap() {
 		if [ x"$RUNAS" != x ]; then
 		### Try as unprivileged user first, be nice ;)
 		### Might also be the only way it works over NFS idmap-ing...
-		    $RUNAS mkdir "$DS/.zfs/snapshot/$SNAPTAG" && SNAP=no
+		    ${RUNAS[*]} mkdir "$DS/.zfs/snapshot/$SNAPTAG" && SNAP=no
 		fi
 		[ x"$SNAP" = xyes ] && mkdir "$DS/.zfs/snapshot/$SNAPTAG" && SNAP=no
 	    fi
@@ -723,7 +726,7 @@ zfssnap() {
 		if [ x"$RUNAS" != x ]; then
 		### Try as unprivileged user first, be nice ;)
 		### Might also be the only way it works over NFS idmap-ing...
-		    $RUNAS zfs snapshot "$DS@$SNAPTAG" && SNAP=no
+		    ${RUNAS[*]} zfs snapshot "$DS@$SNAPTAG" && SNAP=no
 		fi
 		[ x"$SNAP" = xyes ] && zfs snapshot "$DS@$SNAPTAG" && SNAP=no
 	    fi
@@ -736,6 +739,7 @@ zfssnap() {
 	    ;;
 	esac
     done
+    IFS=$OLDIFS
     return 0
 }
 
@@ -750,10 +754,11 @@ dirlist() {
     ZFSSNAP_DSLIST_APPEND="$( GETPROPARG_QUIET=true getproparg vm/zfssnap_dslist_append )" || \
 	ZFSSNAP_DSLIST_APPEND=""
 
+    RUNASA=($RUNAS)
     OLDIFS=$IFS
-    IFS=$(echo -en "\n\b")
+    IFS=$(echo -en "\t\n\b")
     
-    VM_FILES=$( $RUNAS /usr/bin/VBoxManage showvminfo "$1" \
+    VM_FILES=$( ${RUNASA[*]} /usr/bin/VBoxManage showvminfo "$1" \
 		--details --machinereadable | \
 	    egrep -i '^(hd.|VMStateFile|CfgFile|sataport.+|scsiport.*|"SATA Controller-[0-9]+-[0-9]+"|"IDE Controller-[0-9]+-[0-9]+")="/' | \
 	    cut -d '=' -f2 | cut -d '"' -f2 )
